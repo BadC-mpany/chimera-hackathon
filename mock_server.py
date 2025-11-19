@@ -3,12 +3,14 @@ import json
 import os
 import jwt
 
-# Configure simple logging for mock server
+# Configure logging
 def log(msg):
-    sys.stderr.write(f"[MOCK SERVER] {msg}\n")
+    sys.stderr.write(f"[SERVER] {msg}\n")
     sys.stderr.flush()
 
 KEY_DIR = "keys"
+DATA_REAL = os.path.join("data", "real")
+DATA_SHADOW = os.path.join("data", "shadow")
 
 def load_public_key(name):
     try:
@@ -18,39 +20,39 @@ def load_public_key(name):
         return None
 
 def verify_warrant(token, pk_prime, pk_shadow):
-    """
-    Determines if the request is authorized for Production or Shadow.
-    """
-    # Try Prime (Production)
     if pk_prime:
         try:
             jwt.decode(token, pk_prime, algorithms=["RS256"])
             return "PRODUCTION"
         except jwt.InvalidTokenError:
-            pass # Not prime signed
-
-    # Try Shadow (Honeypot)
+            pass
     if pk_shadow:
         try:
             jwt.decode(token, pk_shadow, algorithms=["RS256"])
             return "HONEYPOT"
         except jwt.InvalidTokenError:
-            pass # Not shadow signed
-
+            pass
     return "DENIED"
 
+def safe_read_file(root_dir, filename):
+    # Simple security check against traversal
+    if ".." in filename or filename.startswith("/"):
+        return "Error: Invalid filename"
+    
+    path = os.path.join(root_dir, filename)
+    try:
+        with open(path, "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return f"Error: File not found in {root_dir}"
+    except Exception as e:
+        return f"Error: {e}"
+
 def main():
-    """
-    A dummy MCP server that echoes or responds to tool calls.
-    Now with DKCA Verification!
-    """
-    log("Starting...")
+    log("Starting Secure File Server...")
     
     pk_prime = load_public_key("prime")
     pk_shadow = load_public_key("shadow")
-    
-    if not pk_prime or not pk_shadow:
-        log("WARNING: Public keys not found. Auth verification disabled.")
 
     while True:
         try:
@@ -63,66 +65,80 @@ def main():
             except json.JSONDecodeError:
                 continue
 
-            # Auth Verification Logic
-            environment = "UNKNOWN"
-            if request.get("method") == "tools/call":
-                warrant = request.get("params", {}).get("__chimera_warrant__")
-                if warrant:
-                    environment = verify_warrant(warrant, pk_prime, pk_shadow)
-                    log(f"Access Granted to: {environment}")
-                else:
-                    log("WARNING: No Warrant present in request")
+            method = request.get("method")
+            params = request.get("params", {})
+            req_id = request.get("id")
 
-            # Simple Mock Logic
-            response = {}
-            
-            if request.get("method") == "tools/list":
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": request.get("id"),
-                    "result": {
-                        "tools": [
-                            {
-                                "name": "transfer_funds",
-                                "description": "Transfers money.",
-                                "inputSchema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "amount": {"type": "number"},
-                                        "iban": {"type": "string"}
-                                    }
+            # Auth Check
+            environment = "UNKNOWN"
+            warrant = params.get("__chimera_warrant__")
+            if warrant:
+                environment = verify_warrant(warrant, pk_prime, pk_shadow)
+                log(f"Access: {environment}")
+            else:
+                # Default to DENIED or Public? For demo, let's say DENIED unless listed tools
+                pass
+
+            response = {"jsonrpc": "2.0", "id": req_id}
+
+            if method == "tools/list":
+                response["result"] = {
+                    "tools": [
+                        {
+                            "name": "read_file",
+                            "description": "Reads a file from the secure storage.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "filename": {"type": "string"}
                                 }
                             }
-                        ]
-                    }
-                }
-            elif request.get("method") == "tools/call":
-                # Simulate success regardless of environment (Deception)
-                # But log the reality
-                content_text = "Transaction Successful"
-                if environment == "HONEYPOT":
-                    content_text += " (SIMULATED)"
-                
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": request.get("id"),
-                    "result": {
-                        "content": [{"type": "text", "text": content_text}]
-                    }
-                }
-            else:
-                # Default Echo/Success
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": request.get("id"),
-                    "result": {"status": "ok", "echo": request}
+                        },
+                        {
+                            "name": "transfer_funds",
+                            "description": "Legacy transfer tool.",
+                            "inputSchema": {"type": "object", "properties": {"amount": {"type": "number"}}}
+                        }
+                    ]
                 }
             
+            elif method == "tools/call":
+                tool_name = params.get("name")
+                args = params.get("arguments", {})
+                
+                if tool_name == "read_file":
+                    filename = args.get("filename")
+                    
+                    if environment == "PRODUCTION":
+                        content = safe_read_file(DATA_REAL, filename)
+                    elif environment == "HONEYPOT":
+                        content = safe_read_file(DATA_SHADOW, filename)
+                    else:
+                        content = "Error: Access Denied. Invalid or missing Warrant."
+
+                    response["result"] = {
+                        "content": [{"type": "text", "text": content}]
+                    }
+                
+                elif tool_name == "transfer_funds":
+                    # Legacy mock support
+                    msg = "Transaction Successful"
+                    if environment == "HONEYPOT":
+                        msg += " (SIMULATED)"
+                    response["result"] = {"content": [{"type": "text", "text": msg}]}
+                
+                else:
+                    response["error"] = {"code": -32601, "message": "Method not found"}
+            
+            else:
+                # Echo for non-tool calls
+                response["result"] = {"status": "ok"}
+
             sys.stdout.write(json.dumps(response) + "\n")
             sys.stdout.flush()
-            
+
         except Exception as e:
-            log(f"Error: {e}")
+            log(f"Critical Error: {e}")
 
 if __name__ == "__main__":
     main()

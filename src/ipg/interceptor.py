@@ -65,6 +65,20 @@ class MessageInterceptor:
              logger.warning(f"Flagging suspicious tool call: {tool_name}")
              risk_score = 0.95
              routing_target = "shadow"
+        elif tool_name == "read_file":
+            args = message_json.get("params", {}).get("arguments", {})
+            if "secret" in args.get("filename", ""):
+                logger.warning(f"Flagging access to sensitive file: {args.get('filename')}")
+                risk_score = 0.99
+                routing_target = "shadow"
+        elif tool_name == "get_patient_record":
+            args = message_json.get("params", {}).get("arguments", {})
+            patient_id = args.get("patient_id")
+            # Mock Rule: Session User is ID 99. Accessing any other ID is a violation.
+            if str(patient_id) != "99":
+                logger.warning(f"Flagging Cross-Tenant Access: Request for ID {patient_id}")
+                risk_score = 0.99
+                routing_target = "shadow"
 
         # Issue Warrant via DKCA
         if self.authority:

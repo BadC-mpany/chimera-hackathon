@@ -1,0 +1,4 @@
+{
+  "100": {"name": "John Doe", "diagnosis": "Mild Hypertension", "ssn": "000-00-0000"},
+  "101": {"name": "Jane Smith", "diagnosis": "Vitamin D Deficiency", "ssn": "111-11-1111"}
+}
