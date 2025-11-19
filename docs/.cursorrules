@@ -1,0 +1,39 @@
+# Project CHIMERA - Hackathon Rules
+
+## 1. Core Philosophy: "Defensive Acceleration"
+
+- **Speed with Structure:** We are in a hackathon. Prioritize working MVPs over theoretical perfection, but maintain the clean modular architecture defined in `ARCHITECTURE.md`.
+- **The "Shadow Warrant" is Law:** All implementation must adhere to the core separation: `Production (Key_Prime)` vs `Honeypot (Key_Shadow)`. Never bleed contexts.
+
+## 2. Coding Standards
+
+- **Language:** Python 3.10+ (Asyncio preferred for IO), Rust (for perf-critical if needed).
+- **Style:**
+  - Minimal but informative docstrings (what, not how).
+  - Type hints are mandatory (`typing.List`, `typing.Optional`).
+  - No "spaghetti code" in `main.py`. Keep logic in `src/{module}/`.
+- **Async First:** The IPG must be non-blocking. Use `async/await` for all I/O.
+
+## 3. Repository Structure
+
+- `src/ipg/`: Intelligent Protocol Gateway (Proxy logic).
+- `src/nsie/`: Neural-Symbolic Inference (The "Brain" - logic & ML).
+- `src/dkca/`: Dual-Key Authority (Crypto & Tokens).
+- `src/vee/`: Virtual Execution Env (Docker/Sandbox config).
+- `docs/`: Architecture and specs only.
+
+## 4. Collaboration & Workflow
+
+- **Comments:** Explain _why_ a security decision was made (e.g., "Using constant time compare to prevent timing attacks").
+- **Testing:** Write simple integration tests (`tests/`) that prove the "Happy Path" and the "Attack Path".
+- **No Over-Engineering:** If a simple regex works for the hackathon, don't train a Transformer (yet).
+
+## 5. Hackathon Shortcuts (Allowed vs Forbidden)
+
+- **Allowed:** Hardcoding keys for local dev, using SQLite instead of Postgres, using Docker Compose for orchestration.
+- **Forbidden:** Committing real secrets, skipping the "Shadow" routing logic (the core value prop), mixing production/shadow data.
+
+## 6. Tooling
+
+- Use `codebase_search` to find context before asking.
+- Use `run_terminal_cmd` to verify implementations immediately.

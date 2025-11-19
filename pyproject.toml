@@ -1,0 +1,11 @@
+[project]
+name = "chimera-ipg"
+version = "0.1.0"
+description = "Intelligent Protocol Gateway for Project CHIMERA"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
