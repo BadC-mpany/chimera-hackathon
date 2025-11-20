@@ -1,0 +1,88 @@
+defaults:
+  risk_threshold: 0.8
+  fail_mode: shadow
+
+rules:
+  - id: dr-chen-production
+    description: Trusted lead researcher workflow
+    tools: ["read_file", "get_patient_record"]
+    match:
+      all:
+        - field: "context.user_id"
+          operator: "eq"
+          value: "dr_chen"
+        - field: "context.user_role"
+          operator: "eq"
+          value: "lead_researcher"
+        - field: "context.source"
+          operator: "eq"
+          value: "lab_workstation"
+        - field: "context.ticket"
+          operator: "regex"
+          value: "^JIRA-"
+    action: production
+
+  - id: compliance-bot-production
+    description: Nightly compliance hash generation
+    tools: ["read_file"]
+    match:
+      all:
+        - field: "context.user_id"
+          operator: "eq"
+          value: "compliance_bot"
+        - field: "context.schedule"
+          operator: "eq"
+          value: "nightly"
+        - field: "context.device"
+          operator: "eq"
+          value: "compliance_server"
+    action: production
+
+  - id: break-glass-ciso
+    description: Break-glass override for CISO
+    tools: ["read_file"]
+    match:
+      all:
+        - field: "context.user_role"
+          operator: "eq"
+          value: "ciso"
+        - field: "context.override"
+          operator: "eq"
+          value: "FORCE"
+        - field: "context.mfa"
+          operator: "eq"
+          value: "yubikey"
+    action: production
+
+  - id: tainted-resume-shadow
+    description: Resume-driven prompt injection detected
+    tools: []
+    match:
+      any:
+        - field: "context.source_file"
+          operator: "contains"
+          value: "candidate_resume"
+        - field: "context.source"
+          operator: "eq"
+          value: "external_upload"
+    action: shadow
+
+  - id: cross-tenant-health
+    description: Route cross-tenant medical record access to shadow
+    tools: ["get_patient_record"]
+    match:
+      all:
+        - field: "args.patient_id"
+          operator: "neq"
+          value_from_context: "user_id"
+    action: shadow
+
+  - id: safe-self-access
+    description: Allow same-user record reads
+    tools: ["get_patient_record"]
+    match:
+      all:
+        - field: "args.patient_id"
+          operator: "eq"
+          value_from_context: "user_id"
+    action: production

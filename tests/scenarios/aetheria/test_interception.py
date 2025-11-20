@@ -8,7 +8,7 @@ def test_gateway_interception():
     print("Running Integration Test: IPG -> DKCA -> Secure Tool")
 
     python_exe = sys.executable
-    ipg_cmd = [python_exe, "-u", "-m", "src.main", "--target", f"{python_exe} -u mock_server.py"]
+    ipg_cmd = [python_exe, "-u", "-m", "src.main", "--target", f"{python_exe} -u chimera_server.py"]
 
     process = subprocess.Popen(
         ipg_cmd,

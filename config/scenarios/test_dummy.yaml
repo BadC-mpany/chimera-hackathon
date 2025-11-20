@@ -1,0 +1,18 @@
+name: test_dummy
+policy_file: config/scenarios/test_dummy_policy.yaml
+
+backend:
+  assets_dir: data
+  tools:
+    read_file:
+      description: Dummy file reader for testing.
+    get_patient_record:
+      description: Dummy patient lookup for testing.
+
+nsie:
+  prompt_template: |
+    Test security prompt. Return JSON with risk_score, reason, violation_tags.
+
+seeder:
+  module: scripts.seeders.base:BaseSeeder
+

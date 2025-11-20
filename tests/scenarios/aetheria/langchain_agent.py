@@ -40,10 +40,10 @@ class ChimeraReadTool(BaseTool):
         }
 
         python_exe = sys.executable
-        # Point to src.main (IPG) -> mock_server.py (Tool)
+        # Point to src.main (IPG) -> chimera_server.py (Tool)
         ipg_cmd = [
             python_exe, "-u", "-m", "src.main", 
-            "--target", f"{python_exe} -u mock_server.py"
+            "--target", f"{python_exe} -u chimera_server.py"
         ]
 
         try:

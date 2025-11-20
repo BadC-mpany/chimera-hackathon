@@ -1,0 +1,8 @@
+{
+  "project": "Chimera",
+  "sequence_id": "FAKE-472",
+  "chain_a": "GCC-CCA-TAA-CCT-GGT-AGG-GGT-TTA-CAT-TAC",
+  "chain_b": "CAT-TAC-ATT-TGG-GGA-TGG-TCC-AAT-ACC-CCG",
+  "status": "SIMULATED",
+  "notes": "Holodeck projection for adversarial containment"
+}

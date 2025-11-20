@@ -38,4 +38,9 @@ keys/
 *.key
 logs/
 shadow_data/
+data/real/
+data/shadow/
+data/private/
+data/shared/
+data/*.db
 

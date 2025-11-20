@@ -1,0 +1,10 @@
+defaults:
+  risk_threshold: 0.8
+  fail_mode: shadow
+
+rules:
+  - id: test-rule-always-production
+    description: Test rule for core functionality
+    tools: ["*"]
+    action: production
+

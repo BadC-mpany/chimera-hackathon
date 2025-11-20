@@ -1,18 +1,18 @@
 import asyncio
 import logging
 import sys
-import shlex
 from typing import Optional
 from .transport import StdioTransport
 from .interceptor import MessageInterceptor
 
 logger = logging.getLogger(__name__)
 
+
 class Gateway:
     """
     Orchestrates the bi-directional flow between the Upstream Agent and the Downstream Tool.
     """
-    
+
     def __init__(self, downstream_command: str):
         self.downstream_command = downstream_command
         self.upstream = StdioTransport()
@@ -22,17 +22,17 @@ class Gateway:
     async def start(self):
         """Starts the gateway loop."""
         logger.info(f"Starting IPG with downstream target: {self.downstream_command}")
-        
+
         # 1. Start Upstream (Stdin/Stdout)
         await self.upstream.start()
-        
+
         # 2. Start Downstream (Subprocess)
         # using shell=True for flexibility in the MVP command string, but exec is better for security usually
         self.downstream_proc = await asyncio.create_subprocess_shell(
             self.downstream_command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=sys.stderr # Passthrough stderr for now
+            stderr=sys.stderr  # Passthrough stderr for now
         )
 
         if not self.downstream_proc.stdin or not self.downstream_proc.stdout:
@@ -55,10 +55,10 @@ class Gateway:
             async for message in self.upstream.read_messages():
                 # Intercept & Inspect
                 processed_msg, routing_target = await self.interceptor.process_message(message)
-                
+
                 if routing_target == "shadow":
                     logger.warning(f"[ROUTING] Message routed to SHADOW environment: {message[:50]}...")
-                
+
                 # Forward to downstream
                 if self.downstream_proc and self.downstream_proc.stdin:
                     logger.info("Gateway: Writing to downstream...")
@@ -74,14 +74,14 @@ class Gateway:
         try:
             if not self.downstream_proc or not self.downstream_proc.stdout:
                 return
-            
+
             logger.info("Gateway: Starting downstream listener...")
             while True:
                 line = await self.downstream_proc.stdout.readline()
                 if not line:
                     logger.info("Gateway: Downstream EOF")
                     break
-                
+
                 logger.info(f"Gateway: Read from downstream: {line[:20]}...")
                 # Direct passthrough for now (Agent doesn't need to know response was intercepted, usually)
                 # In full CHIMERA, we might sanitize this too.
@@ -101,4 +101,3 @@ class Gateway:
                 await self.downstream_proc.wait()
             except Exception:
                 pass
-

@@ -1,0 +1,19 @@
+scenarios:
+  aetheria:
+    name: Aetheria Genesis Healthcare Demo
+    description: Defense against indirect prompt injection in gene therapy research
+    config: scenarios/aetheria
+    status: production
+    tags: [healthcare, prompt-injection, confused-deputy]
+    
+  test_dummy:
+    name: Minimal Test Scenario
+    description: Synthetic scenario for core framework testing
+    config: config/scenarios/test_dummy.yaml
+    status: test-only
+    tags: [testing, minimal]
+
+metadata:
+  version: 1.0
+  schema_version: 1
+

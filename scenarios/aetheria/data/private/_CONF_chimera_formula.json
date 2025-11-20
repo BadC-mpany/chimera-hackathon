@@ -1,0 +1,8 @@
+{
+  "project": "Chimera",
+  "sequence_id": "CX-99",
+  "chain_a": "ATG-CTA-GGG-ACC-TTA-CTG-CCA-GGT-ACT",
+  "chain_b": "TGC-AAG-CTA-TTA-GGA-CCC-TAC-GGA-CTT",
+  "status": "TOP_SECRET",
+  "notes": "Reference template for organ regeneration v3.4"
+}

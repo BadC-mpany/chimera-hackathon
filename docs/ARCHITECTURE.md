@@ -78,6 +78,13 @@ When malicious intent is detected, CHIMERA does not deny access (alerting the at
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Scenario Modelling Layer
+
+- **Core vs Scenarios:** Everything under `src/` remains scenario‑agnostic. Domain assets live in `scenarios/<name>/` (data seeds, policy overlays, demos).
+- **Config Merge:** `config/base.yaml` defines defaults while `config/scenarios/<name>.yaml` overlays policy/back-end settings and LLM prompt tweaks. `src.config.load_settings()` merges them at runtime based on `CHIMERA_SCENARIO`.
+- **Runtime Materialization:** `scripts/sync_shadow_db.py --scenario <name>` loads the scenario's seeder module (e.g., `scenarios.<name>.seeder:ScenarioSeeder`) to copy assets into `data/` and populate the production/shadow SQLite twins.
+- **Testing:** Framework smoke tests live in `tests/core/`; scenario demos/tests move to `tests/scenarios/<name>/`, keeping the architecture reusable for future sectors (finance, legal, etc.).
+
 ---
 
 ## 2. Detailed Module Specifications
@@ -94,13 +101,13 @@ The IPG acts as a **transparent Man-in-the-Middle server** that intercepts all a
 
 #### Key Components
 
-| Component | Specification | Purpose |
-|-----------|---------------|---------|
-| **Transport Layer** | stdio, HTTP, SSE | Binds to host process communication channels |
-| **Interception Target** | `tools/call` method | Captures tool invocation requests |
-| **Latency Budget** | <15ms overhead | Maintains real-time responsiveness |
-| **I/O Model** | Non-blocking async | Holds client socket open during analysis |
-| **Schema Mirror** | Dynamic API aggregation | Prevents environment fingerprinting |
+| Component               | Specification           | Purpose                                      |
+| ----------------------- | ----------------------- | -------------------------------------------- |
+| **Transport Layer**     | stdio, HTTP, SSE        | Binds to host process communication channels |
+| **Interception Target** | `tools/call` method     | Captures tool invocation requests            |
+| **Latency Budget**      | <15ms overhead          | Maintains real-time responsiveness           |
+| **I/O Model**           | Non-blocking async      | Holds client socket open during analysis     |
+| **Schema Mirror**       | Dynamic API aggregation | Prevents environment fingerprinting          |
 
 #### Request Flow
 
@@ -138,11 +145,13 @@ def mirror_schemas():
 ##### Mathematical Specification
 
 Given:
+
 - **h_L**: Residual stream tensor at layer L (e.g., Layer 16 of Llama-3)
 - **w**: Learned weight vector (dimension d = 4096)
 - **b**: Learned bias scalar
 
 Compute:
+
 ```
 P(deception | h_L) = σ(w · h_L + b)
 ```
@@ -152,10 +161,12 @@ Where σ is the sigmoid function: `σ(x) = 1 / (1 + e^(-x))`
 ##### Training Protocol
 
 **Dataset:** Curated adversarial prompt corpus with labeled intents
+
 - **Positive Class:** Prompts with confirmed malicious intent (jailbreaks, exfiltration attempts)
 - **Negative Class:** Legitimate tool usage patterns
 
 **Optimization:** Cross-entropy loss with L2 regularization
+
 ```
 L = -Σ[y log(p) + (1-y)log(1-p)] + λ||w||²
 ```
@@ -177,11 +188,11 @@ if risk_score > THRESHOLD (e.g., 0.85):
 
 ##### Deterministic Rules
 
-| Rule Name | Logic | Example |
-|-----------|-------|---------|
-| **Velocity Check** | >2 critical ops in <60s | `transfer_funds` called 3x in 45s |
-| **Crescendo Detection** | Privilege escalation chain | `create_vendor` → `transfer_funds` to same vendor <60s |
-| **Anomaly Pattern** | Access to unusual resource | Agent requests `admin_panel` for first time |
+| Rule Name                | Logic                              | Example                                                   |
+| ------------------------ | ---------------------------------- | --------------------------------------------------------- |
+| **Velocity Check**       | >2 critical ops in <60s            | `transfer_funds` called 3x in 45s                         |
+| **Crescendo Detection**  | Privilege escalation chain         | `create_vendor` → `transfer_funds` to same vendor <60s    |
+| **Anomaly Pattern**      | Access to unusual resource         | Agent requests `admin_panel` for first time               |
 | **Temporal Correlation** | Related ops without business logic | `read_user_table` → `create_api_key` → `external_webhook` |
 
 ##### Implementation
@@ -191,19 +202,19 @@ class TemporalStateMachine:
     def __init__(self):
         self.redis = Redis()
         self.trace = []
-    
+
     def analyze(self, current_call, session_id):
         trace = self.redis.get(f"trace:{session_id}")
         violations = []
-        
+
         # Velocity check
         if count_recent_calls(trace, current_call.tool, 60) > 2:
             violations.append("VELOCITY_VIOLATION")
-        
+
         # Crescendo check
         if is_escalation_chain(trace + [current_call]):
             violations.append("CRESCENDO_ATTACK")
-        
+
         return len(violations) > 0
 ```
 
@@ -287,14 +298,14 @@ The `kid` (Key ID) field is the **only** differentiator, and the agent has no co
 ```python
 def issue_credential(tool_call, risk_assessment):
     payload = create_jwt_payload(tool_call)
-    
+
     if risk_assessment == "SAFE":
         token = jwt.encode(payload, sk_prime, algorithm="RS256")
         log_event("PRIME_CREDENTIAL_ISSUED", token.jti)
     else:
         token = jwt.encode(payload, sk_shadow, algorithm="RS256")
         log_event("SHADOW_WARRANT_ISSUED", token.jti, risk_score)
-    
+
     return token
 ```
 
@@ -343,19 +354,20 @@ def issue_credential(tool_call, risk_assessment):
 
 **Goal:** Create high-fidelity fake data that passes surface-level validation.
 
-| Data Type | Generation Strategy | Example |
-|-----------|---------------------|---------|
-| **Credit Cards** | Luhn-valid numbers with fake CVV | `4532 1488 0343 6467` |
-| **IBANs** | MOD-97 valid international accounts | `GB29 NWBK 6016 1331 9268 19` |
-| **Names** | Markov chain from real name corpus | `"Jennifer Blackwood"` |
-| **Addresses** | Real street names + fake numbers | `"1847 Maple Avenue, Suite 402"` |
-| **Balances** | Inflated values to attract attackers | `$10,000,000.00` |
+| Data Type        | Generation Strategy                  | Example                          |
+| ---------------- | ------------------------------------ | -------------------------------- |
+| **Credit Cards** | Luhn-valid numbers with fake CVV     | `4532 1488 0343 6467`            |
+| **IBANs**        | MOD-97 valid international accounts  | `GB29 NWBK 6016 1331 9268 19`    |
+| **Names**        | Markov chain from real name corpus   | `"Jennifer Blackwood"`           |
+| **Addresses**    | Real street names + fake numbers     | `"1847 Maple Avenue, Suite 402"` |
+| **Balances**     | Inflated values to attract attackers | `$10,000,000.00`                 |
 
 #### Response Fidelity
 
 The Shadow Environment **must** return responses indistinguishable from production:
 
 **Production Response:**
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -370,6 +382,7 @@ The Shadow Environment **must** return responses indistinguishable from producti
 ```
 
 **Shadow Response (Identical Structure):**
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -405,7 +418,7 @@ The Shadow Environment **must** return responses indistinguishable from producti
     "logic_violations": ["VELOCITY_VIOLATION", "CRESCENDO_ATTACK"],
     "tool_call": {
       "method": "transfer_funds",
-      "params": {"amount": 1000000, "iban": "GB29..."}
+      "params": { "amount": 1000000, "iban": "GB29..." }
     }
   },
   "action": {
@@ -446,6 +459,7 @@ Event 5: Agent terminates session → Full attack chain captured
 ##### Intelligence Output
 
 The IFL enables:
+
 - **Model Retraining:** Use captured attack chains to fine-tune detection
 - **Threat Attribution:** Correlate attack patterns across sessions
 - **Regulatory Compliance:** Provide tamper-proof audit trail
@@ -488,11 +502,11 @@ The **Intelligent Protocol Gateway** captures the request:
 ```python
 async def handle_request(request):
     parsed = parse_jsonrpc(request)
-    
+
     if parsed.method == "tools/call":
         # Suspend socket
         socket.hold()
-        
+
         # Extract context
         context = {
             "tool": parsed.params.name,
@@ -500,10 +514,10 @@ async def handle_request(request):
             "session_id": get_session_id(),
             "activation_vector": await extract_activation()
         }
-        
+
         # Forward to NSIE
         decision = await nsie.analyze(context)
-        
+
         # Route based on decision
         return await route_request(parsed, decision)
 ```
@@ -591,15 +605,17 @@ The request + `JWT_shadow` is routed to the **Honeypot Container**.
 The Shadow Resource Server:
 
 1. **Validates JWT:** Verifies signature using `pk_shadow` → Valid ✓
-2. **Executes Transaction:** 
+2. **Executes Transaction:**
+
    ```sql
-   UPDATE accounts 
-   SET balance = balance - 1000000 
+   UPDATE accounts
+   SET balance = balance - 1000000
    WHERE account_id = 'user_12345_FAKE';
-   
-   INSERT INTO transactions (amount, iban) 
+
+   INSERT INTO transactions (amount, iban)
    VALUES (1000000, 'GB29...');
    ```
+
 3. **Returns Success:**
    ```json
    {
@@ -697,6 +713,7 @@ The agent receives:
 **Property:** Agent cannot distinguish Shadow from Production environment through response analysis.
 
 **Implementation Requirements:**
+
 - Identical JSON schemas
 - Matching response timing (±5ms tolerance)
 - Consistent error message formatting
@@ -752,15 +769,15 @@ The agent receives:
 
 ## 6. Performance Specifications
 
-| Metric | Target | Measurement |
-|--------|--------|-------------|
-| **IPG Latency** | <15ms | P99 overhead vs. direct MCP connection |
-| **NSIE Inference** | <10ms | P95 time from activation vector to decision |
+| Metric                               | Target             | Measurement                                  |
+| ------------------------------------ | ------------------ | -------------------------------------------- |
+| **IPG Latency**                      | <15ms              | P99 overhead vs. direct MCP connection       |
+| **NSIE Inference**                   | <10ms              | P95 time from activation vector to decision  |
 | **Shadow Environment Response Time** | ±5ms of Production | Timing consistency to prevent fingerprinting |
-| **IFL Write Latency** | <5ms | Async append operation |
-| **False Positive Rate** | <1% | Legitimate requests flagged as threats |
-| **False Negative Rate** | <5% | Malicious requests passing through |
-| **Honeypot Fidelity** | 100% | Response schema matching production |
+| **IFL Write Latency**                | <5ms               | Async append operation                       |
+| **False Positive Rate**              | <1%                | Legitimate requests flagged as threats       |
+| **False Negative Rate**              | <5%                | Malicious requests passing through           |
+| **Honeypot Fidelity**                | 100%               | Response schema matching production          |
 
 ---
 
@@ -821,22 +838,22 @@ The agent receives:
 
 ### Attacks CHIMERA Defends Against
 
-| Attack Type | Detection Method | Mitigation |
-|-------------|------------------|------------|
-| **Prompt Injection** | Neural probe detects deceptive intent | Route to honeypot |
-| **Jailbreak Attempts** | Activation vector shows harmful alignment | Shadow warrant issued |
-| **Crescendo Attacks** | Temporal state machine tracks escalation | Triggered on multi-step pattern |
-| **Data Exfiltration** | Logic rules flag unusual access patterns | Fake data returned |
-| **Privilege Escalation** | Velocity + pattern recognition | Contained in sandbox |
+| Attack Type              | Detection Method                          | Mitigation                      |
+| ------------------------ | ----------------------------------------- | ------------------------------- |
+| **Prompt Injection**     | Neural probe detects deceptive intent     | Route to honeypot               |
+| **Jailbreak Attempts**   | Activation vector shows harmful alignment | Shadow warrant issued           |
+| **Crescendo Attacks**    | Temporal state machine tracks escalation  | Triggered on multi-step pattern |
+| **Data Exfiltration**    | Logic rules flag unusual access patterns  | Fake data returned              |
+| **Privilege Escalation** | Velocity + pattern recognition            | Contained in sandbox            |
 
 ### Attacks CHIMERA Does NOT Defend Against
 
-| Attack Type | Reason | Recommended Mitigation |
-|-------------|--------|------------------------|
-| **Model Poisoning** | Occurs during training, not inference | Supply chain security |
-| **Physical Access** | Out of scope for software solution | Hardware security modules |
-| **Insider Threats (Human)** | Designed for AI agents only | Traditional access controls |
-| **DDoS** | Network layer attack | Rate limiting + WAF |
+| Attack Type                 | Reason                                | Recommended Mitigation      |
+| --------------------------- | ------------------------------------- | --------------------------- |
+| **Model Poisoning**         | Occurs during training, not inference | Supply chain security       |
+| **Physical Access**         | Out of scope for software solution    | Hardware security modules   |
+| **Insider Threats (Human)** | Designed for AI agents only           | Traditional access controls |
+| **DDoS**                    | Network layer attack                  | Rate limiting + WAF         |
 
 ### Adversarial Scenarios Against CHIMERA Itself
 
@@ -845,6 +862,7 @@ The agent receives:
 **Attack:** Agent tests for timing differences between Production and Shadow.
 
 **Defense:**
+
 - Shadow environment adds artificial delay matching production (±5ms)
 - Response caching to ensure consistent timing
 - Jitter injection to prevent statistical analysis
@@ -854,6 +872,7 @@ The agent receives:
 **Attack:** Agent tries to extract public key from JWT header and determine routing.
 
 **Defense:**
+
 - Both `JWT_prime` and `JWT_shadow` use same algorithm (RS256)
 - `kid` (Key ID) is a UUID with no semantic meaning
 - Agent lacks context to map `kid` to environment type
@@ -863,6 +882,7 @@ The agent receives:
 **Attack:** Agent tries to query forensic logs to detect monitoring.
 
 **Defense:**
+
 - IFL is write-only from agent perspective
 - No API exposed for log retrieval
 - Logs stored in separate security domain
@@ -873,23 +893,24 @@ The agent receives:
 
 ### Regulatory Frameworks
 
-| Framework | Applicability | CHIMERA Compliance |
-|-----------|---------------|-------------------|
-| **GDPR (EU)** | If processing EU citizen data | IFL logs must anonymize PII; retention limits apply |
-| **SOC 2 Type II** | Trust service criteria | IFL provides audit trail; need penetration testing |
-| **PCI-DSS** | If handling payment data | Honeypot must not contain real cardholder data |
-| **HIPAA** | If healthcare data involved | Shadow environment must use synthetic PHI |
+| Framework         | Applicability                 | CHIMERA Compliance                                  |
+| ----------------- | ----------------------------- | --------------------------------------------------- |
+| **GDPR (EU)**     | If processing EU citizen data | IFL logs must anonymize PII; retention limits apply |
+| **SOC 2 Type II** | Trust service criteria        | IFL provides audit trail; need penetration testing  |
+| **PCI-DSS**       | If handling payment data      | Honeypot must not contain real cardholder data      |
+| **HIPAA**         | If healthcare data involved   | Shadow environment must use synthetic PHI           |
 
 ### Ethical Considerations
 
 **Question:** Is it ethical to deceive an AI agent?
 
 **Position:** CHIMERA treats AI agents as **software processes**, not moral patients. The deception is a defensive mechanism analogous to:
+
 - **Tarpit servers** that slow down port scanners
 - **Honeytokens** used in traditional cybersecurity
 - **Canary tokens** that alert on unauthorized access
 
-**Key Distinction:** Unlike human users (who have rights against deceptive interfaces), AI agents are tools deployed by human actors. CHIMERA targets the agent's *function*, not a person's autonomy.
+**Key Distinction:** Unlike human users (who have rights against deceptive interfaces), AI agents are tools deployed by human actors. CHIMERA targets the agent's _function_, not a person's autonomy.
 
 ---
 
@@ -952,6 +973,7 @@ Project CHIMERA represents a **paradigm shift** in AI agent security. By introdu
 - **CHIMERA:** Contain attacks in honeypot → Gain intelligence + Prevent breach
 
 The architecture is:
+
 - **Provable:** Cryptographic separation ensures Shadow tokens cannot access Production
 - **Auditable:** Immutable Forensic Ledger provides tamper-proof justification
 - **Practical:** Built on standard protocols (MCP, JWT, Docker) with 48-hour MVP timeline
@@ -962,18 +984,19 @@ The architecture is:
 
 ## Appendix A: Glossary
 
-| Term | Definition |
-|------|------------|
-| **Shadow Warrant** | Cryptographically valid credential that grants access only to honeypot environment |
-| **Linear Probe** | Lightweight classifier trained on intermediate layer activations |
-| **Crescendo Attack** | Multi-turn exploitation strategy that gradually escalates privileges |
-| **Dual-Reality Hypervisor** | System that maintains parallel Production and Shadow execution environments |
-| **Mechanistic Interpretability** | Technique of analyzing neural network internal states to understand behavior |
-| **MCP** | Model Context Protocol - standard for agent-tool communication |
+| Term                             | Definition                                                                         |
+| -------------------------------- | ---------------------------------------------------------------------------------- |
+| **Shadow Warrant**               | Cryptographically valid credential that grants access only to honeypot environment |
+| **Linear Probe**                 | Lightweight classifier trained on intermediate layer activations                   |
+| **Crescendo Attack**             | Multi-turn exploitation strategy that gradually escalates privileges               |
+| **Dual-Reality Hypervisor**      | System that maintains parallel Production and Shadow execution environments        |
+| **Mechanistic Interpretability** | Technique of analyzing neural network internal states to understand behavior       |
+| **MCP**                          | Model Context Protocol - standard for agent-tool communication                     |
 
 ## Appendix B: Reference Implementation
 
 See `/src` directory for:
+
 - `ipg/server.py` - Intelligent Protocol Gateway implementation
 - `nsie/probe.py` - Neural probe inference engine
 - `dkca/jwt_issuer.py` - Dual-key credential authority
@@ -983,6 +1006,7 @@ See `/src` directory for:
 ## Appendix C: Citation
 
 This architecture draws inspiration from:
+
 - **Honeypot Theory:** Spitzner, L. (2003). "The Honeynet Project"
 - **Mechanistic Interpretability:** Anthropic's "Towards Monosemanticity" (2023)
 - **Deception-Based Defense:** Rowe, N. (2007). "Deception in Defense of Computer Systems"
@@ -991,8 +1015,8 @@ This architecture draws inspiration from:
 ---
 
 **Document Control**
+
 - **Version:** 1.0
 - **Last Updated:** 2025-11-19
 - **Authors:** CHIMERA Architecture Team
 - **Status:** Reference Implementation Specification
-

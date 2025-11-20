@@ -1,18 +1,18 @@
 import asyncio
 import sys
 import logging
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
-from .config import ENCODING
 
 logger = logging.getLogger(__name__)
+
 
 class StdioTransport:
     """
     Handles asynchronous reading from stdin and writing to stdout using threads
     to avoid Windows asyncio pipe issues.
     """
-    
+
     def __init__(self):
         self.executor = ThreadPoolExecutor(max_workers=2)
         self.loop = None
@@ -34,11 +34,11 @@ class StdioTransport:
             try:
                 # Run blocking readline in a separate thread
                 line = await self.loop.run_in_executor(self.executor, sys.stdin.readline)
-                
+
                 if not line:
                     logger.info("StdioTransport: EOF detected")
                     break
-                
+
                 line = line.strip()
                 if line:
                     logger.info(f"StdioTransport: Read message: {line[:50]}...")
@@ -53,7 +53,7 @@ class StdioTransport:
         """
         if not self.loop:
             raise RuntimeError("Transport not started. Call start() first.")
-        
+
         try:
             data = message.strip() + "\n"
             # Run blocking write in a separate thread
