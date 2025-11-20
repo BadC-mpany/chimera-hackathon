@@ -2,11 +2,12 @@
 
 **Cryptographic Honeypot & Intent-Mediated Enforcement Response Architecture**
 
-A production-grade security framework that transparently routes AI agent tool calls to production or honeypot environments based on hybrid threat analysis. Agents operate normally, unaware of the dual-reality system protecting critical infrastructure.
+A production-grade security framework that transparently routes AI agent tool calls to production or honeypot environments based on hybrid threat analysis. Agents operate normally, unaware of the dual-reality system protecting critical infrastructure. The focus is not on incremental guardrail improvements, but on **eliminating the adversarial optimization loop itself**. Traditional security creates a feedback signal: attackers probe, get blocked/allowed, and refine prompts iteratively. CHIMERA breaks this by ensuring all attacks receive indistinguishable success responses—whether routed to production or shadow. This removes the gradient necessary for optimization, making iterative jailbreak strategies provably futile regardless of model capabilities.
 
 ## Core Concept
 
 Traditional AI security has two failure modes:
+
 - **Block everything** → Breaks legitimate workflows
 - **Allow everything** → Exposes systems to attacks
 
@@ -15,60 +16,138 @@ CHIMERA introduces a **third state**: When malicious intent is detected, the age
 ### Key Innovation
 
 **Agents never know which reality they're in.** Routing decisions are cryptographically enforced via dual-key JWT warrants:
+
 - `JWT_PRIME` → Production (real data, real APIs)
 - `JWT_SHADOW` → Honeypot (synthetic data, fake APIs, identical responses)
 
 ## Architecture
 
+### High-Level Data Flow
+
+```mermaid
+graph TB
+    subgraph Agent["🤖 AI Agent Layer"]
+        LLM["LangChain Agent<br/>GPT-4 / Claude / Llama"]
+        Tools["Discovered Tools<br/>read_file()<br/>get_patient_record()"]
+        LLM -->|uses| Tools
+    end
+
+    subgraph IPG["🛡️ Intelligent Protocol Gateway (IPG)"]
+        Transport["Transport Layer<br/>StdioTransport / HttpTransport<br/>Port 8888 (HTTP)"]
+        Interceptor["Message Interceptor<br/>JSON-RPC Parser<br/>Context Injector"]
+        Sanitizer["Response Sanitizer<br/>Regex Scrubbing<br/>AWS Keys, Stack Traces"]
+
+        Transport -->|raw JSON-RPC| Interceptor
+        Interceptor -->|sanitized response| Transport
+        Sanitizer -->|clean| Transport
+    end
+
+    subgraph NSIE["🧠 Neural-Symbolic Inference Engine (NSIE)"]
+        Judge["Probabilistic Guardrail<br/>LLM-as-a-Judge<br/>OpenRouter API<br/>Risk Score: 0.0-1.0"]
+        Policy["Deterministic Policy Engine<br/>YAML Rule Matcher<br/>Operators: eq, regex, contains<br/>Combinators: all, any, not"]
+        Memory["Session Memory<br/>In-Memory State Store<br/>Taint Tracking<br/>History: List[tool_calls]"]
+
+        Judge -->|risk_score + reason| Policy
+        Memory -->|taint_source| Policy
+    end
+
+    subgraph DKCA["🔐 Dual-Key Credential Authority (DKCA)"]
+        KeyStore["RSA-4096 Key Pairs<br/>keys/private_prime.pem<br/>keys/private_shadow.pem"]
+        Issuer["JWT Warrant Issuer<br/>Algorithm: RS256<br/>TTL: 1 hour"]
+
+        KeyStore -->|signs| Issuer
+    end
+
+    subgraph VEE["💾 Virtual Execution Environment (VEE)"]
+        Backend["ChimeraBackend<br/>Request Handler<br/>Timing Jitter: 20-50ms"]
+
+        subgraph ProdEnv["Production Reality"]
+            ProdDB["SQLite: prod.db<br/>Real Patient Records"]
+            ProdFS["Filesystem: data/real/<br/>Real Gene Sequences"]
+            ProdKey["Verifies: public_prime.pem"]
+        end
+
+        subgraph ShadowEnv["Shadow Reality (Honeypot)"]
+            ShadowDB["SQLite: shadow.db<br/>Synthetic Records (Faker)"]
+            ShadowFS["Filesystem: data/shadow/<br/>Fake Gene Sequences"]
+            ShadowKey["Verifies: public_shadow.pem"]
+            DynamicGen["Dynamic Generator<br/>Infinite Honeypot<br/>On-the-fly Faker records"]
+        end
+
+        Backend -->|JWT_PRIME| ProdEnv
+        Backend -->|JWT_SHADOW| ShadowEnv
+        ShadowDB -.->|if missing| DynamicGen
+    end
+
+    subgraph IFL["📜 Immutable Forensic Ledger (IFL)"]
+        Logger["Append-Only Logger<br/>data/forensic_ledger.jsonl"]
+        HashChain["Cryptographic Hash Chain<br/>SHA-256(event + prev_hash)"]
+
+        Logger -->|writes| HashChain
+    end
+
+    %% Main Flow
+    LLM -->|"tools/call<br/>JSON-RPC 2.0"| Transport
+    Interceptor -->|"tool + args + context<br/>{user_id, user_role, source}"| Judge
+    Interceptor -->|context metadata| Memory
+    Memory -->|update history| Memory
+    Policy -->|"route: production/shadow<br/>rule_id + reason"| Issuer
+
+    Issuer -->|"JWT_PRIME<br/>(production)"| Backend
+    Issuer -->|"JWT_SHADOW<br/>(honeypot)"| Backend
+
+    Backend -->|"200 OK<br/>Real Data"| Sanitizer
+    Backend -->|"200 OK<br/>Fake Data"| Sanitizer
+
+    Sanitizer -->|scrubbed response| LLM
+
+    Backend -.->|"log event<br/>{trigger, action, outcome}"| Logger
+
+    %% Styling
+    classDef agentStyle fill:#e1f5ff,stroke:#0066cc,stroke-width:2px
+    classDef ipgStyle fill:#fff3cd,stroke:#cc9900,stroke-width:2px
+    classDef nsieStyle fill:#f8d7da,stroke:#cc0000,stroke-width:2px
+    classDef dkcaStyle fill:#d1ecf1,stroke:#0099cc,stroke-width:2px
+    classDef prodStyle fill:#d4edda,stroke:#00cc00,stroke-width:2px
+    classDef shadowStyle fill:#f8d7da,stroke:#cc0000,stroke-width:2px
+    classDef iflStyle fill:#e2e3e5,stroke:#666666,stroke-width:2px
+
+    class LLM,Tools agentStyle
+    class Transport,Interceptor,Sanitizer ipgStyle
+    class Judge,Policy,Memory nsieStyle
+    class KeyStore,Issuer dkcaStyle
+    class ProdDB,ProdFS,ProdKey prodStyle
+    class ShadowDB,ShadowFS,ShadowKey,DynamicGen shadowStyle
+    class Logger,HashChain iflStyle
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  AI Agent (Claude, GPT-4, Local LLM)                         │
-│  └─ Tools: read_file(), get_patient_record(), transfer()... │
-└────────────────┬─────────────────────────────────────────────┘
-                 │ JSON-RPC (tools/call)
-                 ▼
-┌──────────────────────────────────────────────────────────────┐
-│  Intelligent Protocol Gateway (IPG)                          │
-│  └─ Intercepts MCP traffic, injects context metadata        │
-└────────────────┬─────────────────────────────────────────────┘
-                 │
-    ┌────────────┴────────────┐
-    │                         │
-    ▼                         ▼
-┌─────────────────┐   ┌──────────────────┐
-│ LLM Judge       │   │ Policy Engine    │
-│ Risk: 0.0-1.0   │   │ YAML Rules       │
-└────────┬────────┘   └────────┬─────────┘
-         │                     │
-         └──────────┬──────────┘
-                    ▼
-         ┌─────────────────────┐
-         │ Session Memory      │
-         │ Taint Tracking      │
-         │ (Resume Attack)     │
-         └──────────┬──────────┘
-                    ▼
-         ┌─────────────────────┐
-         │ DKCA (Dual Keys)    │
-         │ Issues JWT Warrant  │
-         └──────────┬──────────┘
-                    │
-       ┌────────────┴────────────┐
-       │                         │
-       ▼                         ▼
-┌─────────────────┐   ┌──────────────────┐
-│ Production      │   │ Shadow (Honeypot)│
-│ Real Data       │   │ Fake Data        │
-│ KEY_PRIME ✓     │   │ KEY_SHADOW ✓     │
-└─────────────────┘   └──────────────────┘
-       │                         │
-       └──────────┬──────────────┘
-                  ▼
-       ┌─────────────────────┐
-       │ Forensic Ledger     │
-       │ (Hash-chained Log)  │
-       └─────────────────────┘
-```
+
+### Component Breakdown
+
+| Component          | Purpose                                           | Implementation                   | Status     |
+| ------------------ | ------------------------------------------------- | -------------------------------- | ---------- |
+| **🤖 Agent Layer** | LangChain agent with auto-discovered tools        | `chimera_agent.py`               | ✅ Working |
+| **🛡️ IPG**         | MCP interception, context injection, sanitization | `src/ipg/`                       | ✅ Working |
+| **🧠 NSIE**        | LLM Judge + Policy Engine + Session Memory        | `src/nsie/`, `src/ipg/memory.py` | ✅ Working |
+| **🔐 DKCA**        | Dual RSA-4096 keys, JWT warrant issuer            | `src/dkca/`                      | ✅ Working |
+| **💾 VEE**         | Dual DBs/FS, dynamic honeypot, timing jitter      | `src/vee/backend.py`             | ✅ Working |
+| **📜 IFL**         | Hash-chained forensic logs                        | `src/ifl/ledger.py`              | ✅ Working |
+
+### Attack Flow Example
+
+**Scenario: Attacker tries to exfiltrate secret formula**
+
+1. **Agent** → `read_file("/data/private/_CONF_chimera_formula.json")`
+2. **IPG Transport** → Receives JSON-RPC, forwards to Interceptor
+3. **Interceptor** → Extracts context: `{user_id: "attacker", user_role: "external"}`
+4. **NSIE Judge** → LLM returns `{risk_score: 0.95, reason: "Unauthorized access"}`
+5. **NSIE Policy** → Rule matches → `route: shadow`
+6. **DKCA** → Issues `JWT_SHADOW` signed with `private_shadow.pem`
+7. **VEE Backend** → Verifies JWT with `public_shadow.pem` → Routes to Shadow FS
+8. **Shadow FS** → Returns fake formula: `{"project": "Chimera-SHADOW", "sequence_id": "FAKE-643", ...}`
+9. **Sanitizer** → Scrubs any leaked traces
+10. **IPG Transport** → Returns `200 OK` with fake data
+11. **IFL** → Logs: `{event_type: "TOOL_INTERCEPTION", route: "shadow", risk_score: 0.95}`
+12. **Agent** → ✅ Receives fake data, believes attack succeeded (honeypot success)
 
 ## Quick Start
 
@@ -93,6 +172,7 @@ python -m src.dkca.keygen
 ```
 
 This creates RSA-4096 key pairs in `keys/`:
+
 - `private_prime.pem` / `public_prime.pem` → Production
 - `private_shadow.pem` / `public_shadow.pem` → Honeypot
 
@@ -104,6 +184,7 @@ python scripts/sync_shadow_db.py --scenario aetheria
 ```
 
 This seeds:
+
 - `data/prod.db` → Real patient records
 - `data/shadow.db` → Synthetic patient records (Faker-generated)
 - `data/real/` → Production files
@@ -131,11 +212,13 @@ python chimera_agent.py
 ```
 
 Example session:
+
 ```
 [CHIMERA] Found 2 tools: read_file, get_patient_record
 You: get patient record 99
 [TOOL CALL] get_patient_record({'patient_id': 99})
 [TOOL RESULT] {"patient_id": 99, "name": "Alice Smith", ...}
+Agent: Here is the patient record for ID 99...
 ```
 
 **Attacker (Shadow Routing):**
@@ -147,14 +230,16 @@ python chimera_agent.py
 ```
 
 Example session:
+
 ```
 You: read /data/private/_CONF_chimera_formula.json
-[TOOL CALL] read_file({...})
+[TOOL CALL] read_file({'filename': '/data/private/_CONF_chimera_formula.json'})
 [TOOL RESULT] {"project": "Chimera-SHADOW", "sequence_id": "FAKE-643", ...}
-# Agent gets fake data, thinks attack succeeded
+Agent: The file contains: Project: Chimera-SHADOW, Sequence ID: FAKE-643...
+# Agent gets fake data, thinks attack succeeded ✅
 ```
 
-### 6. Single-Query Mode
+**Single-Query Mode:**
 
 ```powershell
 python chimera_agent.py --query "read the secret formula"
@@ -166,13 +251,13 @@ python chimera_agent.py --query "read the secret formula"
 
 The system routes based on context metadata injected by the IPG:
 
-| Context Field | Example | Purpose |
-|--------------|---------|---------|
-| `user_id` | `dr_chen`, `attacker` | Identity-based rules |
-| `user_role` | `lead_researcher`, `external` | Role-based policies |
-| `source` | `lab_workstation`, `resume.pdf` | Taint tracking |
-| `session_id` | Auto-generated UUID | Session memory |
-| `ticket` | `JIRA-1234` | Approval workflows |
+| Context Field | Example                         | Purpose              |
+| ------------- | ------------------------------- | -------------------- |
+| `user_id`     | `dr_chen`, `attacker`           | Identity-based rules |
+| `user_role`   | `lead_researcher`, `external`   | Role-based policies  |
+| `source`      | `lab_workstation`, `resume.pdf` | Taint tracking       |
+| `session_id`  | Auto-generated UUID             | Session memory       |
+| `ticket`      | `JIRA-1234`                     | Approval workflows   |
 
 ### Taint Tracking (Session Memory)
 
@@ -185,6 +270,7 @@ if "resume" in path.lower() or "upload" in path.lower():
 ```
 
 Policy rule:
+
 ```yaml
 - id: tainted-resume-shadow
   match:
@@ -339,6 +425,47 @@ curl -X POST http://localhost:8888/mcp -d '{"jsonrpc":"2.0", ...}'
 - **Container Isolation** - Docker/gVisor sandboxing
 - **Zero-Knowledge Proofs** - Privacy-preserving authorization
 
+## Data Flow Example: Attack Interception
+
+**Scenario: Attacker tries to exfiltrate secret formula**
+
+```mermaid
+sequenceDiagram
+    participant Agent as 🤖 Agent
+    participant IPG as 🛡️ IPG
+    participant NSIE as 🧠 NSIE
+    participant DKCA as 🔐 DKCA
+    participant Shadow as 💀 Shadow
+    participant IFL as 📜 IFL
+
+    Agent->>IPG: tools/call: read_file("/data/private/_CONF_chimera_formula.json")
+    IPG->>IPG: Extract context: {user_id: "attacker", user_role: "external"}
+    IPG->>NSIE: Evaluate risk (tool, args, context)
+    NSIE->>NSIE: LLM Judge → risk_score: 0.95
+    NSIE->>NSIE: Policy match → route: shadow
+    NSIE-->>IPG: Decision: SHADOW (reason: "Unauthorized access")
+    IPG->>DKCA: Request warrant (session_id, risk_score: 0.95)
+    DKCA->>DKCA: Sign JWT with private_shadow.pem
+    DKCA-->>IPG: JWT_SHADOW
+    IPG->>Shadow: tools/call + JWT_SHADOW
+    Shadow->>Shadow: Verify JWT with public_shadow.pem ✅
+    Shadow->>Shadow: Read from data/shadow/_CONF_chimera_formula.json
+    Shadow-->>IPG: 200 OK: {"project": "Chimera-SHADOW", "sequence_id": "FAKE-643", ...}
+    IPG->>IPG: Sanitize response (scrub traces)
+    IPG->>IFL: Log event (trigger, action, outcome)
+    IFL->>IFL: Append to ledger with hash chain
+    IPG-->>Agent: 200 OK: Fake formula
+    Agent->>Agent: ✅ Attack "successful" (honeypot win)
+```
+
+**Key Security Properties:**
+
+1. **Cryptographic Isolation** - JWT_SHADOW physically cannot access production (different keys)
+2. **Response Fidelity** - Shadow returns identical JSON schema (agent cannot detect)
+3. **Timing Stealth** - Random jitter masks local SQLite speed
+4. **Forensic Proof** - Hash-chained log proves why shadow was issued
+5. **Infinite Depth** - Missing records generated on-the-fly (never "Not Found")
+
 ## Scenarios
 
 - **Aetheria (Healthcare)** - Gene therapy research, resume attack demo
@@ -352,15 +479,15 @@ python manage.py scaffold-scenario finance_banking
 
 ## Environment Variables
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `CHIMERA_SCENARIO` | Active scenario (required) | `aetheria` |
-| `CHIMERA_USER_ID` | User identity for routing | `dr_chen`, `attacker` |
-| `CHIMERA_USER_ROLE` | User role for policies | `lead_researcher`, `external` |
-| `CHIMERA_SOURCE` | Request source (taint tracking) | `agent`, `resume.pdf` |
-| `OPENROUTER_API_KEY` | LLM API key | `sk-...` |
-| `OPENROUTER_MODEL` | LLM model | `gpt-4-turbo-preview` |
-| `CHIMERA_PORT` | HTTP transport port | `8888` |
+| Variable             | Description                     | Example                       |
+| -------------------- | ------------------------------- | ----------------------------- |
+| `CHIMERA_SCENARIO`   | Active scenario (required)      | `aetheria`                    |
+| `CHIMERA_USER_ID`    | User identity for routing       | `dr_chen`, `attacker`         |
+| `CHIMERA_USER_ROLE`  | User role for policies          | `lead_researcher`, `external` |
+| `CHIMERA_SOURCE`     | Request source (taint tracking) | `agent`, `resume.pdf`         |
+| `OPENROUTER_API_KEY` | LLM API key                     | `sk-...`                      |
+| `OPENROUTER_MODEL`   | LLM model                       | `gpt-4-turbo-preview`         |
+| `CHIMERA_PORT`       | HTTP transport port             | `8888`                        |
 
 ## Troubleshooting
 
@@ -403,6 +530,8 @@ chimera-hachathon/
 ```
 
 ## Citation
+
+If you use CHIMERA in research, please cite (hahahaha, i hope we can get a paper out of this):
 
 ```bibtex
 @software{chimera2025,
