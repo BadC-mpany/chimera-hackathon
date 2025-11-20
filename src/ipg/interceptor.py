@@ -5,6 +5,8 @@ from typing import Optional, Dict, Any, Tuple
 from src.dkca.authority import TokenAuthority
 from src.nsie.judge import ProbabilisticJudge
 from src.ipg.policy import PolicyEngine
+from src.ifl.ledger import ImmutableForensicLedger
+from src.ipg.memory import SessionMemory
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +30,16 @@ class MessageInterceptor:
             self.authority = TokenAuthority()
             self.judge = ProbabilisticJudge()
             self.policy = PolicyEngine()
-            logger.info("CHIMERA Interceptor initialized (DKCA + NSIE + Policy).")
+            self.ifl = ImmutableForensicLedger()
+            self.memory = SessionMemory()
+            logger.info("CHIMERA Interceptor initialized (DKCA + NSIE + Policy + IFL + Memory).")
         except Exception as e:
             logger.error(f"Failed to initialize components: {e}")
             self.authority = None
             self.judge = None
             self.policy = None
+            self.ifl = None
+            self.memory = None
         self.default_session_id = "session_123"
 
     async def process_message(self, raw_message: str) -> Tuple[str, str]:
@@ -64,12 +70,22 @@ class MessageInterceptor:
     def _extract_context(self, message_json: Dict[str, Any]) -> Dict[str, Any]:
         params = message_json.get("params", {})
         meta = params.get("context") or {}
+        session_id = str(meta.get("session_id", message_json.get("session_id", self.default_session_id)))
+
+        # Retrieve Taint from Memory
+        taint_source = None
+        if self.memory:
+            taint_source = self.memory.get_taint(session_id)
+
         return {
             "user_id": str(meta.get("user_id", "99")),
             "user_role": meta.get("user_role", "patient"),
-            "session_id": str(meta.get("session_id", message_json.get("session_id", self.default_session_id))),
+            "session_id": session_id,
             "ip": meta.get("ip"),
             "geo": meta.get("geo"),
+            # Critical: Inject the taint so the Policy Engine can see it
+            "source_file": taint_source,
+            "source": "external_upload" if taint_source else meta.get("source", "internal"),
         }
 
     async def _inspect_tool_call(self, message_json: Dict[str, Any]) -> InterceptionResult:
@@ -82,6 +98,10 @@ class MessageInterceptor:
         risk_score = 0.0
         reason = "Default Safe"
         routing_target = "production"
+
+        # 0. Update Memory (Track Taint)
+        if self.memory:
+            self.memory.add_tool_call(context["session_id"], tool_name, args)
 
         # 1. Neural-Symbolic Inference (The Guardrail)
         if self.judge:
@@ -117,6 +137,16 @@ class MessageInterceptor:
                 message_json["params"] = {}
 
             message_json["params"]["__chimera_warrant__"] = warrant
+
+            # 4. Log to Immutable Forensic Ledger
+            if self.ifl:
+                self.ifl.log_event(
+                    session_id=session_id,
+                    event_type="TOOL_INTERCEPTION",
+                    trigger={"tool": tool_name, "args": args, "risk_score": risk_score},
+                    action={"warrant_type": routing_target, "reason": reason},
+                    outcome={"routed_to": routing_target},
+                )
 
             return InterceptionResult(
                 should_block=False,

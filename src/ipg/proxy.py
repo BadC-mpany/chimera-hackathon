@@ -1,9 +1,11 @@
 import asyncio
 import logging
+import os
 import sys
-from typing import Optional
-from .transport import StdioTransport
+from typing import Optional, Union
+from .transport import StdioTransport, HttpTransport
 from .interceptor import MessageInterceptor
+from .sanitizer import ResponseSanitizer
 
 logger = logging.getLogger(__name__)
 
@@ -11,19 +13,29 @@ logger = logging.getLogger(__name__)
 class Gateway:
     """
     Orchestrates the bi-directional flow between the Upstream Agent and the Downstream Tool.
+    Supports both Stdio and HTTP transports.
     """
 
-    def __init__(self, downstream_command: str):
+    def __init__(self, downstream_command: str, transport_mode: str = "stdio"):
         self.downstream_command = downstream_command
-        self.upstream = StdioTransport()
+        self.transport_mode = transport_mode
+        self.upstream: Union[StdioTransport, HttpTransport]
+
+        if self.transport_mode == "http":
+            port = int(os.getenv("CHIMERA_PORT", "8888"))
+            self.upstream = HttpTransport(port=port)
+        else:
+            self.upstream = StdioTransport()
+
         self.interceptor = MessageInterceptor()
+        self.sanitizer = ResponseSanitizer()
         self.downstream_proc: Optional[asyncio.subprocess.Process] = None
 
     async def start(self):
         """Starts the gateway loop."""
-        logger.info(f"Starting IPG with downstream target: {self.downstream_command}")
+        logger.info(f"Starting IPG (Transport: {self.transport_mode}) with downstream target: {self.downstream_command}")
 
-        # 1. Start Upstream (Stdin/Stdout)
+        # 1. Start Upstream (Stdin/Stdout or HTTP Server)
         await self.upstream.start()
 
         # 2. Start Downstream (Subprocess)
@@ -50,7 +62,7 @@ class Gateway:
             await self.stop()
 
     async def _upstream_to_downstream(self):
-        """Reads from Agent (stdin), Intercepts, writes to Tool (subprocess)."""
+        """Reads from Agent (stdin/http), Intercepts, writes to Tool (subprocess)."""
         try:
             async for message in self.upstream.read_messages():
                 # Intercept & Inspect
@@ -70,7 +82,7 @@ class Gateway:
             logger.error(f"Upstream -> Downstream error: {e}")
 
     async def _downstream_to_upstream(self):
-        """Reads from Tool (subprocess), writes to Agent (stdout)."""
+        """Reads from Tool (subprocess), writes to Agent (stdout/http response)."""
         try:
             if not self.downstream_proc or not self.downstream_proc.stdout:
                 return
@@ -83,12 +95,13 @@ class Gateway:
                     break
 
                 logger.info(f"Gateway: Read from downstream: {line[:20]}...")
-                # Direct passthrough for now (Agent doesn't need to know response was intercepted, usually)
-                # In full CHIMERA, we might sanitize this too.
+
                 msg = line.decode('utf-8').strip()
                 if msg:
-                    await self.upstream.write_message(msg)
-                    logger.info("Gateway: Forwarded to upstream")
+                    # Sanitize response before sending back to agent
+                    clean_msg = self.sanitizer.sanitize(msg)
+                    await self.upstream.write_message(clean_msg)
+                    logger.info("Gateway: Forwarded sanitized message to upstream")
         except Exception as e:
             logger.error(f"Downstream -> Upstream error: {e}")
 

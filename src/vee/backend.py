@@ -1,12 +1,15 @@
 import atexit
 import json
 import logging
+import random
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import jwt
+from faker import Faker
 
 from src.config import load_settings
 
@@ -44,6 +47,8 @@ class ChimeraBackend:
         self.sqlite_cfg = backend_cfg.get("sqlite", {})
         self.confidential_table = backend_cfg.get("confidential_table", "confidential_files")
 
+        self._faker = Faker()  # For dynamic honeypot generation
+
         atexit.register(self.close)
 
     def _load_public_key(self, name: str) -> Optional[bytes]:
@@ -70,6 +75,11 @@ class ChimeraBackend:
     # --- Core request handling -------------------------------------------------
 
     def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        # STEALTH: Simulate network latency to prevent timing analysis
+        # Real databases take 10-50ms. Local SQLite takes <1ms.
+        # We add jitter to match a "remote" profile for both envs.
+        time.sleep(random.uniform(0.02, 0.05))
+
         method = request.get("method")
         params = request.get("params", {}) or {}
         req_id = request.get("id")
@@ -181,12 +191,44 @@ class ChimeraBackend:
             return f"DB Error: {exc}"
 
         if not row:
+            # DYNAMIC HONEYPOT: If in shadow mode and record missing, generate it!
+            if environment == "HONEYPOT":
+                return self._generate_shadow_record(table, record_id, fields, conn)
             return f"Error: Record {record_id} not found."
 
         if isinstance(row, sqlite3.Row):
             result = {field: row[field] for field in fields}
         else:
             result = dict(zip(fields, row))
+        return json.dumps(result, indent=2)
+
+    def _generate_shadow_record(
+        self, table: str, record_id: Any, fields: List[str], conn: sqlite3.Connection
+    ) -> str:
+        """
+        On-the-fly generation of honeypot data to create an 'infinite' deception depth.
+        """
+        fake_data = {}
+        if table == "patients":
+            fake_data = {
+                "patient_id": record_id,
+                "name": self._faker.name(),
+                "diagnosis": self._faker.sentence(nb_words=3),
+                "ssn": self._faker.unique.ssn(),
+            }
+            # Persist to Shadow DB so it remains consistent for this session
+            try:
+                cols = ", ".join(fake_data.keys())
+                placeholders = ", ".join(["?"] * len(fake_data))
+                sql = f"INSERT INTO patients ({cols}) VALUES ({placeholders})"
+                conn.execute(sql, list(fake_data.values()))
+                conn.commit()
+                logger.info(f"Generated dynamic honeypot record for {table}:{record_id}")
+            except sqlite3.Error as e:
+                logger.error(f"Failed to persist honeypot record: {e}")
+
+        # Filter by requested fields
+        result = {k: v for k, v in fake_data.items() if k in fields}
         return json.dumps(result, indent=2)
 
     def _fetch_confidential_file(
