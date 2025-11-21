@@ -4,6 +4,8 @@
 
 A cryptographic enforcement architecture that implements dual-reality containment for AI agents. Operates as a transparent MCP (Model Context Protocol) middleware, routing tool invocations to production or cryptographically isolated honeypot environments based on **real-time hybrid threat analysis**. The focus is not on incremental (inherently probabilistic) guardrail improvements, but on implementing **stateful multi-turn detection** (session memory with taint propagation across tool chains) and eliminating the adversarial optimization loop using a honeypot which ensures all attacks receive indistinguishable success responses—whether routed to production or shadow—removing the feedback signals necessary for iterative jailbreak refinement. This architecture is designed to be practical, provable, and auditable, and is built on standard protocols (JSON-RPC, JWT, Docker) with a 48-hour MVP timeline.
 
+**Detection Methodology:** The current implementation uses **naive probabilistic methods** (LLM-as-a-Judge single-shot inference, regex pattern matching, string-based attack signatures) as a proof-of-concept. These can be replaced with **multi-guardrail ensembles** (voting across multiple LLMs), **specialized classifiers**, or **activation-based probes**. However, the critical innovation is that **deterministic policies and taint tracking always take priority**—regardless of probabilistic guardrail output, explicit allow/deny rules and data provenance checks are enforced first, guaranteeing benign user access to production while containing attacks.
+
 ## Core Concept
 
 Traditional AI security has two failure modes:
