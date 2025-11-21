@@ -2,6 +2,12 @@ defaults:
   risk_threshold: 0.8
   fail_mode: shadow
 
+tools:
+  read_file:
+    category: safe
+  get_patient_record:
+    category: sensitive
+  
 rules:
   - id: dr-chen-production
     description: Trusted lead researcher workflow

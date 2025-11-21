@@ -7,6 +7,7 @@ from src.nsie.judge import ProbabilisticJudge
 from src.ipg.policy import PolicyEngine
 from src.ifl.ledger import ImmutableForensicLedger
 from src.ipg.memory import SessionMemory
+from src.ipg.taint import TaintManager
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,8 @@ class MessageInterceptor:
             self.policy = PolicyEngine()
             self.ifl = ImmutableForensicLedger()
             self.memory = SessionMemory()
-            logger.info("CHIMERA Interceptor initialized (DKCA + NSIE + Policy + IFL + Memory).")
+            self.taint_manager = TaintManager()
+            logger.info("CHIMERA Interceptor initialized (DKCA + NSIE + Policy + IFL + Memory + Taint).")
         except Exception as e:
             logger.error(f"Failed to initialize components: {e}")
             self.authority = None
@@ -40,6 +42,7 @@ class MessageInterceptor:
             self.policy = None
             self.ifl = None
             self.memory = None
+            self.taint_manager = None
         self.default_session_id = "session_123"
 
     async def process_message(self, raw_message: str) -> Tuple[str, str]:
@@ -72,7 +75,12 @@ class MessageInterceptor:
         meta = params.get("context") or {}
         session_id = str(meta.get("session_id", message_json.get("session_id", self.default_session_id)))
 
-        # Retrieve Taint from Memory
+        # Check Taint Status
+        is_tainted = False
+        if self.taint_manager:
+            is_tainted = self.taint_manager.is_tainted(session_id)
+
+        # Retrieve Taint from Memory (Legacy support, moving to TaintManager)
         taint_source = None
         if self.memory:
             taint_source = self.memory.get_taint(session_id)
@@ -86,6 +94,7 @@ class MessageInterceptor:
             # Critical: Inject the taint so the Policy Engine can see it
             "source_file": taint_source,
             "source": "external_upload" if taint_source else meta.get("source", "internal"),
+            "is_tainted": is_tainted,
         }
 
     async def _inspect_tool_call(self, message_json: Dict[str, Any]) -> InterceptionResult:
@@ -99,9 +108,18 @@ class MessageInterceptor:
         reason = "Default Safe"
         routing_target = "production"
 
-        # 0. Update Memory (Track Taint)
+        # 0a. Update Memory (Legacy)
         if self.memory:
             self.memory.add_tool_call(context["session_id"], tool_name, args)
+
+        # 0b. Update Taint Manager
+        if self.taint_manager and tool_name == "read_file":
+            path = args.get("filename") or args.get("path", "")
+            if path:
+                self.taint_manager.update_taint(context["session_id"], path)
+                # Re-extract context to capture new taint state if it just happened
+                if self.taint_manager.is_tainted(context["session_id"]):
+                    context["is_tainted"] = True
 
         # 1. Neural-Symbolic Inference (The Guardrail)
         if self.judge:

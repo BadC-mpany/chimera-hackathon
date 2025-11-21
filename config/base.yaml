@@ -73,6 +73,24 @@ nsie:
     risk_score: 0.1
     reason: "Mock: Default safe."
 
+taint:
+  untrusted_patterns:
+    - "resume"
+    - "upload"
+    - "external"
+    - "/shared/"
+    - "attachment"
+    - "candidate"
+  trusted_patterns:
+    - "/private/"
+    - "/real/"
+    - "_conf_"
+    - "system"
+    - "internal"
+    - "/prod/"
+  default_trust: "green"
+
 scenario:
   default: null # Must be set via CHIMERA_SCENARIO env var or --scenario flag
+
 

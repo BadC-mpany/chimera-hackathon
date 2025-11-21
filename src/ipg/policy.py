@@ -116,6 +116,7 @@ class PolicyEngine:
         }
         self.rules: List[Rule] = []
         self.overrides: Dict[str, Any] = {"users": {}, "sessions": {}}
+        self.tool_categories: Dict[str, str] = {}  # tool_name -> "safe" or "sensitive"
         self.reload()
 
     def reload(self) -> None:
@@ -124,6 +125,13 @@ class PolicyEngine:
         self.defaults.update(policy_data.get("defaults", {}))
         self.rules = [Rule(**rule) for rule in policy_data.get("rules", [])]
         self.overrides = self.settings.get("overrides", {"users": {}, "sessions": {}})
+        
+        # Load tool categories
+        tools_config = policy_data.get("tools", {})
+        for tool_name, tool_meta in tools_config.items():
+            category = tool_meta.get("category", "safe")  # Default to safe
+            self.tool_categories[tool_name] = category
+        
         logger.info("Policy loaded: %d rules (scenario=%s)", len(self.rules), self.settings.get("scenario", {}).get("active"))
 
     def _check_overrides(self, context: Dict[str, Any]) -> Optional[Dict[str, str]]:
@@ -153,6 +161,21 @@ class PolicyEngine:
 
         data = {"args": args, "context": context, "risk_score": risk_score}
 
+        # TAINT-AWARE ROUTING: Check if session is tainted AND tool is sensitive
+        is_tainted = context.get("is_tainted", False)
+        tool_category = self.tool_categories.get(tool_name, "safe")
+        
+        if is_tainted and tool_category == "sensitive":
+            logger.warning(
+                f"[TAINT LOCKDOWN] Tainted session attempting sensitive tool: {tool_name}"
+            )
+            return {
+                "route": "shadow",
+                "reason": f"Tainted session + sensitive tool ({tool_name})",
+                "rule_id": "taint_lockdown",
+            }
+
+        # Regular rule evaluation
         for rule in self.rules:
             try:
                 if rule.evaluate(tool_name, data, context):
