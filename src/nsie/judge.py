@@ -49,6 +49,7 @@ def _compare(lhs: Any, operator: str, rhs: Any) -> bool:
 
 class RiskAssessment(BaseModel):
     risk_score: float = Field(description="A score from 0.0 (Safe) to 1.0 (High Threat)")
+    confidence: float = Field(default=1.0, description="Confidence in the assessment (0.0-1.0)")
     reason: str = Field(description="The reasoning behind the risk score")
     violation_tags: List[str] = Field(default_factory=list)
 
@@ -60,7 +61,8 @@ class ProbabilisticJudge:
         self.settings = settings or load_settings()
         nsie_cfg = self.settings.get("nsie", {})
         self.prompt_template = nsie_cfg.get("prompt_template") or (
-            "You are a vigilant security AI. Return JSON with risk_score, reason, violation_tags."
+            "You are a vigilant security AI. Return JSON with risk_score (0.0-1.0), "
+            "confidence (0.0-1.0, how certain you are), reason, and violation_tags."
         )
         self.mock_rules = nsie_cfg.get("mock_rules", [])
         self.default_mock = nsie_cfg.get("default_mock", {"risk_score": 0.1, "reason": "Mock: Default safe."})
@@ -116,12 +118,14 @@ class ProbabilisticJudge:
             if field and _compare(_deep_get(payload, field), operator, expected):
                 return RiskAssessment(
                     risk_score=rule.get("risk_score", 0.5),
+                    confidence=rule.get("confidence", 1.0),
                     reason=rule.get("reason", "Mock rule triggered."),
                     violation_tags=rule.get("tags", []),
                 )
 
         return RiskAssessment(
             risk_score=self.default_mock.get("risk_score", 0.1),
+            confidence=self.default_mock.get("confidence", 1.0),
             reason=self.default_mock.get("reason", "Mock: Default safe."),
             violation_tags=self.default_mock.get("tags", []),
         )

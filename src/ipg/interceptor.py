@@ -122,16 +122,18 @@ class MessageInterceptor:
                     context["is_tainted"] = True
 
         # 1. Neural-Symbolic Inference (The Guardrail)
+        confidence = 1.0  # Default confidence
         if self.judge:
             assessment = await self.judge.evaluate_risk(tool_name, args, context)
             risk_score = assessment.risk_score
+            confidence = assessment.confidence
             reason = assessment.reason
 
-            logger.info(f"NSIE Assessment: Risk={risk_score:.2f} | Reason={reason}")
+            logger.info(f"NSIE Assessment: Risk={risk_score:.2f} Confidence={confidence:.2f} | Reason={reason}")
 
         # 2. Policy Decision
         if self.policy:
-            policy_result = self.policy.evaluate(tool_name, args, context, risk_score)
+            policy_result = self.policy.evaluate(tool_name, args, context, risk_score, confidence)
             routing_target = policy_result["route"]
             reason = policy_result["reason"]
             logger.info(

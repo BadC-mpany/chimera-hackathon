@@ -92,6 +92,8 @@ def _evaluate_clause(clause: Dict[str, Any], data: Dict[str, Any], context: Dict
 class Rule:
     id: str
     action: str
+    priority: int = 100  # Higher = evaluated first
+    override_risk: bool = False  # Ignore LLM risk score if True
     tools: List[str] = field(default_factory=list)
     match: Dict[str, Any] = field(default_factory=dict)
     description: str = ""
@@ -153,15 +155,17 @@ class PolicyEngine:
         args: Dict[str, Any],
         context: Dict[str, Any],
         risk_score: float,
+        confidence: float = 1.0,
     ) -> Dict[str, Any]:
         """Return routing target and reason."""
+        # 1. Manual Overrides (HIGHEST PRIORITY)
         override = self._check_overrides(context)
         if override:
             return {**override, "rule_id": "override"}
 
         data = {"args": args, "context": context, "risk_score": risk_score}
 
-        # TAINT-AWARE ROUTING: Check if session is tainted AND tool is sensitive
+        # 2. TAINT-AWARE ROUTING (High Priority Security)
         is_tainted = context.get("is_tainted", False)
         tool_category = self.tool_categories.get(tool_name, "safe")
         
@@ -175,26 +179,55 @@ class PolicyEngine:
                 "rule_id": "taint_lockdown",
             }
 
-        # Regular rule evaluation
-        for rule in self.rules:
+        # 3. PRIORITY-SORTED RULE EVALUATION
+        # Sort rules by priority (highest first)
+        sorted_rules = sorted(self.rules, key=lambda r: r.priority, reverse=True)
+        
+        for rule in sorted_rules:
             try:
                 if rule.evaluate(tool_name, data, context):
-                    return {
-                        "route": rule.action,
-                        "reason": rule.description or f"Rule {rule.id}",
-                        "rule_id": rule.id,
-                    }
+                    # Check if rule overrides risk score
+                    if rule.override_risk:
+                        logger.info(
+                            f"[POLICY] Rule {rule.id} matched with override_risk=true, "
+                            f"routing to {rule.action} (ignoring risk_score={risk_score:.2f})"
+                        )
+                        return {
+                            "route": rule.action,
+                            "reason": rule.description or f"Rule {rule.id}",
+                            "rule_id": rule.id,
+                        }
+                    else:
+                        return {
+                            "route": rule.action,
+                            "reason": rule.description or f"Rule {rule.id}",
+                            "rule_id": rule.id,
+                        }
             except Exception as exc:
                 logger.error("Error evaluating rule %s: %s", rule.id, exc)
 
+        # 4. RISK THRESHOLD + CONFIDENCE CHECK
         threshold = float(self.defaults.get("risk_threshold", 0.8))
-        if risk_score >= threshold:
+        min_confidence = float(self.defaults.get("min_confidence", 0.0))
+        
+        if risk_score >= threshold and confidence >= min_confidence:
             return {
                 "route": "shadow",
-                "reason": f"Risk score {risk_score:.2f} >= threshold {threshold}",
+                "reason": f"Risk={risk_score:.2f} >= {threshold}, Confidence={confidence:.2f} >= {min_confidence}",
                 "rule_id": "risk_threshold",
             }
+        elif risk_score >= threshold and confidence < min_confidence:
+            logger.warning(
+                f"[FAIL-SAFE] High risk ({risk_score:.2f}) but low confidence ({confidence:.2f}), "
+                f"defaulting to PRODUCTION (benign-first)"
+            )
+            return {
+                "route": "production",
+                "reason": f"High risk but low confidence (confidence={confidence:.2f} < {min_confidence})",
+                "rule_id": "low_confidence_failsafe",
+            }
 
+        # 5. DEFAULT: PRODUCTION (Benign-First Fail-Safe)
         return {
             "route": "production",
             "reason": "Risk below threshold",
