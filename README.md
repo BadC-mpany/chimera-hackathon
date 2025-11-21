@@ -2,7 +2,7 @@
 
 **Cryptographic Honeypot & Intent-Mediated Enforcement Response Architecture**
 
-A production-grade security framework that transparently routes AI agent tool calls to production or honeypot environments based on hybrid threat analysis. Agents operate normally, unaware of the dual-reality system protecting critical infrastructure. The focus is not on incremental guardrail improvements, but on **eliminating the adversarial optimization loop itself**. Traditional security creates a feedback signal: attackers probe, get blocked/allowed, and refine prompts iteratively. CHIMERA breaks this by ensuring all attacks receive indistinguishable success responses—whether routed to production or shadow. This removes the gradient necessary for optimization, making iterative jailbreak strategies provably futile regardless of model capabilities.
+A cryptographic enforcement architecture that implements dual-reality containment for AI agents. Operates as a transparent MCP (Model Context Protocol) middleware, routing tool invocations to production or cryptographically isolated honeypot environments based on **real-time hybrid threat analysis**. The focus is not on incremental (inherently probabilistic) guardrail improvements, but on implementing **stateful multi-turn detection** (session memory with taint propagation across tool chains) and eliminating the adversarial optimization loop using a honeypot which ensures all attacks receive indistinguishable success responses—whether routed to production or shadow—removing the feedback signals necessary for iterative jailbreak refinement. This architecture is designed to be practical, provable, and auditable, and is built on standard protocols (JSON-RPC, JWT, Docker) with a 48-hour MVP timeline.
 
 ## Core Concept
 
