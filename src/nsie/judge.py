@@ -9,9 +9,15 @@ from pydantic import BaseModel, Field
 
 from src.config import load_settings
 
-from .llm_clients import get_llm_client
-
 logger = logging.getLogger(__name__)
+
+
+def get_llm_client():
+    """
+    Returns None to use mock assessment mode.
+    Real LLM client can be implemented later if needed.
+    """
+    return None
 
 
 def _deep_get(container: Dict[str, Any], path: str) -> Any:
@@ -67,6 +73,9 @@ class ProbabilisticJudge:
         
         self.llm = get_llm_client()
         self.parser = JsonOutputParser(pydantic_object=RiskAssessment)
+        self.prompt_template = nsie_cfg.get("prompt_template", "")
+        self.mock_rules = nsie_cfg.get("mock_rules", [])
+        self.default_mock = nsie_cfg.get("default_mock", {})
 
     async def evaluate_risk(
         self, tool_name: str, args: Dict[str, Any], context: Dict[str, Any]
