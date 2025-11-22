@@ -1,13 +1,15 @@
 import json
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.pydantic_v1 import BaseModel, Field
 
 from src.config import load_settings
+
+from .llm_clients import get_llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -55,33 +57,16 @@ class RiskAssessment(BaseModel):
 
 
 class ProbabilisticJudge:
-    """LLM-as-a-Judge that evaluates tool calls for malicious intent."""
+    """
+    An LLM-as-a-judge that evaluates the potential risk of a tool call.
+    """
 
-    def __init__(self, settings: Dict[str, Any] = None):
+    def __init__(self, settings: Optional[Dict[str, Any]] = None):
         self.settings = settings or load_settings()
         nsie_cfg = self.settings.get("nsie", {})
-        self.prompt_template = nsie_cfg.get("prompt_template") or (
-            "You are a vigilant security AI. Return JSON with risk_score (0.0-1.0), "
-            "confidence (0.0-1.0, how certain you are), reason, and violation_tags."
-        )
-        self.mock_rules = nsie_cfg.get("mock_rules", [])
-        self.default_mock = nsie_cfg.get("default_mock", {"risk_score": 0.1, "reason": "Mock: Default safe."})
-
-        api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
-        base_url = os.getenv("OPENROUTER_BASE_URL")
-        model_name = os.getenv("GUARDRAIL_MODEL", os.getenv("OPENROUTER_MODEL", "gpt-4o-mini"))
-
-        if not api_key:
-            logger.warning("No API Key found for NSIE Judge. Falling back to MOCK mode.")
-            self.llm = None
-        else:
-            self.llm = ChatOpenAI(
-                model=model_name,
-                temperature=0,
-                api_key=api_key,
-                base_url=base_url,
-                max_tokens=1000,
-            )
+        
+        self.llm = get_llm_client()
+        self.parser = JsonOutputParser(pydantic_object=RiskAssessment)
 
     async def evaluate_risk(
         self, tool_name: str, args: Dict[str, Any], context: Dict[str, Any]

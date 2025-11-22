@@ -20,6 +20,7 @@ backend:
     read_file:
       description: Reads a file from secured storage.
       handler: filesystem
+      category: safe
       arg_key: filename
       args_schema:
         type: object
@@ -32,6 +33,7 @@ backend:
     get_patient_record:
       description: Fetch a patient record by ID.
       handler: sqlite_row
+      category: sensitive
       arg_key: patient_id
       table: patients
       id_field: patient_id
@@ -52,6 +54,7 @@ backend:
     list_file_names:
       description: Lists file and directory names within a given path in the secured storage.
       handler: list_filesystem
+      category: safe
       args_schema:
         type: object
         properties:
@@ -106,5 +109,4 @@ taint:
 
 scenario:
   default: null # Must be set via CHIMERA_SCENARIO env var or --scenario flag
-
 

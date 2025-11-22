@@ -2,10 +2,12 @@ import asyncio
 import logging
 import os
 import sys
-from typing import Optional, Union
+from typing import Dict, Optional, Union, Any
 from .transport import StdioTransport, HttpTransport
 from .interceptor import MessageInterceptor
 from .sanitizer import ResponseSanitizer
+
+from src.config import load_settings
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +18,10 @@ class Gateway:
     Supports both Stdio and HTTP transports.
     """
 
-    def __init__(self, downstream_command: str, transport_mode: str = "stdio"):
+    def __init__(self, downstream_command: str, transport_mode: str = "stdio", settings: Optional[Dict[str, Any]] = None):
         self.downstream_command = downstream_command
         self.transport_mode = transport_mode
+        self.settings = settings or load_settings()
         self.upstream: Union[StdioTransport, HttpTransport]
 
         if self.transport_mode == "http":
@@ -28,7 +31,7 @@ class Gateway:
         else:
             self.upstream = StdioTransport()
 
-        self.interceptor = MessageInterceptor()
+        self.interceptor = MessageInterceptor(settings=self.settings)
         self.sanitizer = ResponseSanitizer()
         self.downstream_proc: Optional[asyncio.subprocess.Process] = None
 
