@@ -257,15 +257,19 @@ class ChimeraBackend:
         except ValueError:
             return "Error: Invalid filename."
 
+        if not target.is_file():
+            return f"Error: '{filename}' is not a file or does not exist."
+
         try:
             return target.read_text(encoding="utf-8")
         except FileNotFoundError:
-            return f"Error: File not found in {target}"
+            # Generic error to avoid leaking path information
+            return f"Error: File not found."
         except Exception as exc:
             return f"Error: {exc}"
 
     def _handle_list_filesystem(self, environment: str, tool_cfg: Dict[str, Any], args: Dict[str, Any]) -> str:
-        path_str = args.get("path", ".")
+        path_str = args.get("path", ".").lstrip("/\\") # Sanitize leading slashes
 
         root = self.file_roots.get(environment)
         if not root:
