@@ -8,12 +8,6 @@ evaluation_order:
   - security_policies
   - risk_based_policies
 
-# Defines tool sensitivity for taint lockdown.
-tools:
-  read_file: { category: safe }
-  get_patient_record: { category: sensitive }
-  list_file_names: { category: safe }
-
 # 1. Directives: Absolute Manual Overrides
 # For emergency lockdown or administrative actions. Bypasses all other logic.
 directives:

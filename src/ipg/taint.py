@@ -1,6 +1,6 @@
 from enum import Enum
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 import logging
 import re
 
@@ -22,15 +22,11 @@ class TaintState:
 
 
 class TaintManager:
-    """
-    Tracks data provenance and session taint status.
-    If a session accesses RED (untrusted) data, the session becomes TAINTED (RED).
-    Patterns are configurable per scenario via config.
-    """
+    """Manages the trust level of data sources and taint status of sessions."""
 
-    def __init__(self, settings: Optional[Dict] = None):
-        self._sessions: Dict[str, TaintState] = {}
+    def __init__(self, settings: Optional[Dict[str, Any]] = None):
         self.settings = settings or load_settings()
+        self.sessions: Dict[str, TaintState] = {}
 
         # Load taint patterns from config
         taint_config = self.settings.get("taint", {})
@@ -53,9 +49,9 @@ class TaintManager:
         logger.info(f"TaintManager initialized: {len(self.red_patterns)} RED patterns, {len(self.green_patterns)} GREEN patterns")
 
     def get_session_state(self, session_id: str) -> TaintState:
-        if session_id not in self._sessions:
-            self._sessions[session_id] = TaintState(session_id=session_id)
-        return self._sessions[session_id]
+        if session_id not in self.sessions:
+            self.sessions[session_id] = TaintState(session_id=session_id)
+        return self.sessions[session_id]
 
     def check_source_trust(self, source: str) -> TrustLevel:
         """

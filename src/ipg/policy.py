@@ -139,9 +139,10 @@ class PolicyEngine:
         self.security_policies = [Rule(**r) for r in policy_cfg.get("security_policies", [])]
         self.risk_based_policies = policy_cfg.get("risk_based_policies", {})
         
-        # Load tool categories
+        # Load tool categories from the backend tool definitions, not the policy file
         self.tool_categories: Dict[str, str] = {}
-        for tool_name, tool_meta in policy_cfg.get("tools", {}).items():
+        backend_tools = self.settings.get("backend", {}).get("tools", {})
+        for tool_name, tool_meta in backend_tools.items():
             self.tool_categories[tool_name] = tool_meta.get("category", "safe")
 
     def evaluate(

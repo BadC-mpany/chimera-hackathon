@@ -6,6 +6,7 @@ import sys
 
 from dotenv import load_dotenv
 
+from .config import load_settings
 from .ipg.proxy import Gateway
 
 load_dotenv()
@@ -28,7 +29,8 @@ def main():
     )
     args = parser.parse_args()
 
-    gateway = Gateway(args.target, transport_mode=args.transport)
+    settings = load_settings()
+    gateway = Gateway(args.target, transport_mode=args.transport, settings=settings)
     
     try:
         asyncio.run(gateway.start())

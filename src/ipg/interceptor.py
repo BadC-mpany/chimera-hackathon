@@ -2,12 +2,14 @@ import json
 import logging
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, Tuple
+
+from src.config import load_settings
 from src.dkca.authority import TokenAuthority
-from src.nsie.judge import ProbabilisticJudge
-from src.ipg.policy import PolicyEngine
 from src.ifl.ledger import ImmutableForensicLedger
 from src.ipg.memory import SessionMemory
+from src.ipg.policy import PolicyEngine
 from src.ipg.taint import TaintManager
+from src.nsie.judge import ProbabilisticJudge
 
 logger = logging.getLogger(__name__)
 
@@ -25,15 +27,16 @@ class MessageInterceptor:
     Inspects JSON-RPC messages to detect tool calls and determine routing.
     """
 
-    def __init__(self):
+    def __init__(self, settings: Optional[Dict[str, Any]] = None):
+        self.settings = settings or load_settings()
         # Initialize Components
         try:
             self.authority = TokenAuthority()
-            self.judge = ProbabilisticJudge()
-            self.policy = PolicyEngine()
+            self.judge = ProbabilisticJudge(settings=self.settings)
+            self.policy = PolicyEngine(settings=self.settings)
             self.ifl = ImmutableForensicLedger()
             self.memory = SessionMemory()
-            self.taint_manager = TaintManager()
+            self.taint_manager = TaintManager(settings=self.settings)
             logger.info("CHIMERA Interceptor initialized (DKCA + NSIE + Policy + IFL + Memory + Taint).")
         except Exception as e:
             logger.error(f"Failed to initialize components: {e}")
