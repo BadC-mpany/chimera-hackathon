@@ -23,7 +23,7 @@ class Gateway:
 
         if self.transport_mode == "http":
             port = int(os.getenv("CHIMERA_PORT", "8888"))
-            host = os.getenv("CHIMERA_HOST", "0.0.0.0")
+            host = os.getenv("CHIMERA_HOST", "127.0.0.1")
             self.upstream = HttpTransport(host=host, port=port)
         else:
             self.upstream = StdioTransport()

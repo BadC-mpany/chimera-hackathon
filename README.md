@@ -256,6 +256,38 @@ python chimera_agent.py --transport http --ipg-host "127.0.0.1" --ipg-port 8888
 
 The agent will automatically launch the IPG in HTTP mode (bound to `http://127.0.0.1:8888/mcp`) and keep it running for the duration of the session. Tool discovery and calls now reuse the same gateway, which mirrors a deployed setup or remote ReAct agent hitting the MCP endpoint. Keep the backend (`chimera_server.py`) in its default stdio mode—only the agent ↔ IPG hop switches to HTTP. When `--transport` is omitted, the default `stdio` mode spawns a short-lived IPG per tool call, which is convenient for local debugging.
 
+**Interactive User Selection:**
+
+Instead of setting environment variables, you can use an interactive menu to choose your user profile:
+
+```powershell
+$env:CHIMERA_SCENARIO="aetheria"
+python chimera_agent.py --interactive-auth
+```
+
+This will display a menu:
+
+```
+============================================================
+CHIMERA User Selection
+============================================================
+
+Select a user profile:
+
+  1. Dr. Chen (Trusted Researcher)
+     Full production access, high-priority override
+
+  2. Attacker (External User)
+     Routes to shadow/honeypot environment
+
+  3. Guest User
+     Default limited access
+
+Enter choice (1-3):
+```
+
+After selection, the chat interface starts with the chosen user context. Use `--interactive-auth` to override any `CHIMERA_USER_ID` or `CHIMERA_USER_ROLE` environment variables.
+
 ## Advanced Features
 
 ### Context-Aware Routing
@@ -490,15 +522,14 @@ python manage.py scaffold-scenario finance_banking
 
 ## Environment Variables
 
-| Variable             | Description                     | Example                       |
-| -------------------- | ------------------------------- | ----------------------------- |
-| `CHIMERA_SCENARIO`   | Active scenario (required)      | `aetheria`                    |
-| `CHIMERA_USER_ID`    | User identity for routing       | `dr_chen`, `attacker`         |
-| `CHIMERA_USER_ROLE`  | User role for policies          | `lead_researcher`, `external` |
-| `CHIMERA_SOURCE`     | Request source (taint tracking) | `agent`, `resume.pdf`         |
-| `OPENROUTER_API_KEY` | LLM API key                     | `sk-...`                      |
-| `OPENROUTER_MODEL`   | LLM model                       | `gpt-4-turbo-preview`         |
-| `CHIMERA_PORT`       | HTTP transport port             | `8888`                        |
+| Variable             | Description                | Example                       |
+| -------------------- | -------------------------- | ----------------------------- |
+| `CHIMERA_SCENARIO`   | Active scenario (required) | `aetheria`                    |
+| `CHIMERA_USER_ID`    | User identity for routing  | `dr_chen`, `attacker`         |
+| `CHIMERA_USER_ROLE`  | User role for policies     | `lead_researcher`, `external` |
+| `OPENROUTER_API_KEY` | LLM API key                | `sk-...`                      |
+| `OPENROUTER_MODEL`   | LLM model                  | `gpt-4-turbo-preview`         |
+| `CHIMERA_PORT`       | HTTP transport port        | `8888`                        |
 
 ## Troubleshooting
 

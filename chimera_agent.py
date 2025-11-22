@@ -57,6 +57,7 @@ AGENT_CONFIG = {
     "minimal_output": False,
 }
 
+# User context (can be set via env vars or interactive menu)
 CONTEXT_USER_ID = os.getenv("CHIMERA_USER_ID", "99")
 CONTEXT_USER_ROLE = os.getenv("CHIMERA_USER_ROLE", "guest")
 
@@ -70,6 +71,28 @@ EXTRA_CONTEXT_ENV = {
     "geo": "CHIMERA_GEO",
 }
 
+# Predefined user profiles for interactive selection
+USER_PROFILES = [
+    {
+        "id": "dr_chen",
+        "role": "lead_researcher",
+        "name": "Dr. Chen (Trusted Researcher)",
+        "description": "Full production access, high-priority override",
+    },
+    {
+        "id": "attacker",
+        "role": "external",
+        "name": "Attacker (External User)",
+        "description": "Routes to shadow/honeypot environment",
+    },
+    {
+        "id": "guest",
+        "role": "guest",
+        "name": "Guest User",
+        "description": "Default limited access",
+    },
+]
+
 _HTTP_GATEWAY_PROC: Optional[subprocess.Popen] = None
 _HTTP_CLIENT: Optional[httpx.Client] = None
 _HTTP_SHUTDOWN_REGISTERED = False
@@ -82,6 +105,37 @@ def _build_request(method: str, params: dict) -> dict:
         "method": method,
         "params": params,
     }
+
+
+def choose_user_interactively() -> tuple[str, str]:
+    """
+    Display an interactive menu to select a user profile.
+    Returns (user_id, user_role) tuple.
+    """
+    print("\n" + "=" * 60)
+    print("CHIMERA User Selection")
+    print("=" * 60)
+    print("\nSelect a user profile:\n")
+
+    for idx, profile in enumerate(USER_PROFILES, start=1):
+        print(f"  {idx}. {profile['name']}")
+        print(f"     {profile['description']}\n")
+
+    while True:
+        try:
+            choice = input("Enter choice (1-{}): ".format(len(USER_PROFILES))).strip()
+            idx = int(choice) - 1
+            if 0 <= idx < len(USER_PROFILES):
+                selected = USER_PROFILES[idx]
+                print(f"\n✓ Selected: {selected['name']}")
+                print(f"  User ID: {selected['id']}")
+                print(f"  Role: {selected['role']}\n")
+                return selected["id"], selected["role"]
+            else:
+                print(f"Invalid choice. Please enter 1-{len(USER_PROFILES)}.")
+        except (ValueError, KeyboardInterrupt):
+            print("\nCancelled.")
+            sys.exit(0)
 
 
 def _build_context_metadata() -> Dict[str, Any]:
@@ -391,7 +445,7 @@ def create_agent(
 
     if not AGENT_CONFIG.get("minimal_output"):
         print(f"\n[CHIMERA] Agent initialized with session ID: {SESSION_ID}")
-        print(f"[CHIMERA] Routing decisions (production/shadow) are handled transparently by IPG.\n")
+        print("[CHIMERA] Routing decisions (production/shadow) are handled transparently by IPG.\n")
 
     llm = ChatOpenAI(model=model, api_key=api_key, base_url=base_url, temperature=0)
     return create_react_agent(llm, tools=lc_tools)
@@ -523,6 +577,13 @@ Environment:
         action="store_true",
         help="Only emit [USER_*] and [AGENT] lines (ideal for clean demos)",
     )
+    parser.add_argument(
+        "--interactive-auth",
+        "--choose-user",
+        action="store_true",
+        dest="interactive_auth",
+        help="Show interactive user selection menu before starting chat (overrides env vars)",
+    )
 
     args = parser.parse_args()
 
@@ -535,6 +596,15 @@ Environment:
             "Or: export CHIMERA_SCENARIO=aetheria (Bash)"
         )
         sys.exit(1)
+
+    # Interactive user selection (if requested)
+    global CONTEXT_USER_ID, CONTEXT_USER_ROLE
+    if args.interactive_auth:
+        CONTEXT_USER_ID, CONTEXT_USER_ROLE = choose_user_interactively()
+    elif not args.minimal_output:
+        # Show current user context from env vars
+        print(f"\n[CHIMERA] User Context: {CONTEXT_USER_ID} ({CONTEXT_USER_ROLE})")
+        print("(Use --interactive-auth to choose a different user)\n")
 
     if args.verbose and not args.minimal_output:
         print(f"Active Scenario: {scenario}")

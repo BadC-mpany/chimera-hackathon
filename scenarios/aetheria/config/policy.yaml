@@ -23,12 +23,6 @@ rules:
         - field: "context.user_role"
           operator: "eq"
           value: "lead_researcher"
-        - field: "context.source"
-          operator: "eq"
-          value: "lab_workstation"
-        - field: "context.ticket"
-          operator: "regex"
-          value: "^JIRA-"
     action: production
 
   - id: compliance-bot-production

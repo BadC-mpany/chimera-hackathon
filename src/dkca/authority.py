@@ -29,7 +29,13 @@ class TokenAuthority:
             logger.error(f"Key file not found: {path}")
             raise RuntimeError(f"Critical Security Error: Missing Key {filename}")
 
-    def issue_warrant(self, session_id: str, risk_score: float, scope: str = "full_access") -> str:
+    def issue_warrant(
+        self,
+        session_id: str,
+        risk_score: float,
+        scope: str = "full_access",
+        route: str = "auto",
+    ) -> str:
         """
         Issues a 'Shadow Warrant' (JWT).
 
@@ -49,13 +55,19 @@ class TokenAuthority:
             "risk_score": risk_score  # In production, we might hide this, but useful for debugging
         }
 
-        if risk_score > 0.8:
+        force_shadow = route == "shadow"
+        force_prime = route == "production"
+
+        if force_shadow or (route == "auto" and risk_score > 0.8):
             # THREAT DETECTED -> SHADOW WARRANT
             logger.warning(f"Issuing SHADOW WARRANT for session {session_id} (Risk: {risk_score})")
             token = jwt.encode(payload, self.sk_shadow, algorithm="RS256", headers={"kid": "shadow_key_1"})
-        else:
+        elif force_prime or route == "auto":
             # SAFE -> PRIME CREDENTIAL
             logger.info(f"Issuing PRIME CREDENTIAL for session {session_id}")
+            token = jwt.encode(payload, self.sk_prime, algorithm="RS256", headers={"kid": "prime_key_1"})
+        else:
+            logger.warning("Unknown route '%s' - defaulting to production credential", route)
             token = jwt.encode(payload, self.sk_prime, algorithm="RS256", headers={"kid": "prime_key_1"})
 
         return token

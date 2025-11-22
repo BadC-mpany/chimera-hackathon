@@ -149,8 +149,11 @@ class MessageInterceptor:
         # 3. Issue Warrant via DKCA
         if self.authority:
             session_id = context.get("session_id", self.default_session_id)
-            # Pass the AI-generated risk score to the Authority
-            warrant = self.authority.issue_warrant(session_id, risk_score)
+            warrant = self.authority.issue_warrant(
+                session_id=session_id,
+                risk_score=risk_score,
+                route=routing_target,
+            )
 
             # Inject Warrant
             if "params" not in message_json:
