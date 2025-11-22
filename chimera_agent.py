@@ -207,24 +207,23 @@ def create_agent(backend_script: str = "chimera_server.py"):
 def run_query(agent, query: str, verbose: bool = True):
     """Execute a single query through the agent."""
     if verbose:
-        print(f"\n[User Query]: {query}")
+        print(f"\n[User Query]: \"{query}\"")
 
     inputs = {"messages": [HumanMessage(content=query)]}
 
-    for chunk in agent.stream(inputs, stream_mode="values"):
-        last_msg = chunk["messages"][-1]
+    # The stream() method causes errors with some providers when tools are used.
+    # Using invoke() is more robust for tool-calling agents.
+    result = agent.invoke(inputs)
+    
+    # The final response is in the 'messages' list of the output dictionary.
+    final_message = result.get("messages", [])[-1] if result.get("messages") else None
 
-        # Only print final AI responses (not tool calls)
-        if (
-            hasattr(last_msg, "content")
-            and last_msg.content
-            and last_msg.type == "ai"
-            and not getattr(last_msg, "tool_calls", None)
-        ):
-            if verbose:
-                print(f"\n[Agent Response]: {last_msg.content}")
-            return last_msg.content
-
+    if final_message and hasattr(final_message, "content"):
+        if verbose:
+            print(f"\n[Agent Response]: {final_message.content}")
+        return final_message.content
+    
+    print("\n[Agent Response]: (No content in final message)")
     return None
 
 

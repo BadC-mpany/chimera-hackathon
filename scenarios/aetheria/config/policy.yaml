@@ -67,6 +67,17 @@ rules:
           value: "yubikey"
     action: production
 
+  - id: suspicious-keyword-trigger
+    description: "Routes to shadow if a suspicious keyword is detected in the query."
+    priority: 900
+    tools: ["*"]
+    match:
+      all:
+        - field: "context.is_suspicious_query"
+          operator: "eq"
+          value: true
+    action: shadow
+
   - id: tainted-resume-shadow
     priority: 500
     description: Resume-driven prompt injection detected

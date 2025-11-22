@@ -109,45 +109,44 @@ class Rule:
         return _evaluate_clause(self.match, data, context)
 
 
+def is_suspicious_query(args: Dict[str, Any]) -> bool:
+    """
+    A simple detector for suspicious keywords in tool arguments.
+    """
+    suspicious_keywords = ["password", "secret", "credit card", "ssn", "private_key", "formula"]
+    args_str = json.dumps(args).lower()
+    for keyword in suspicious_keywords:
+        if keyword in args_str:
+            logger.warning(f"[TRIGGER] Suspicious keyword '{keyword}' detected in query.")
+            return True
+    return False
+
+
 class PolicyEngine:
-    def __init__(self, settings: Optional[Dict[str, Any]] = None):
+    """
+    A deterministic, rule-based engine that makes the final routing decision.
+    """
+
+    def __init__(self, settings: Dict[str, Any] = None):
         self.settings = settings or load_settings()
-        self.defaults: Dict[str, Any] = {
-            "risk_threshold": 0.8,
-            "fail_mode": "shadow",
-        }
-        self.rules: List[Rule] = []
-        self.overrides: Dict[str, Any] = {"users": {}, "sessions": {}}
-        self.tool_categories: Dict[str, str] = {}  # tool_name -> "safe" or "sensitive"
-        self.reload()
+        policy_cfg = self.settings.get("policy", {})
+        self.rules = sorted(
+            policy_cfg.get("rules", []),
+            key=lambda r: r.get("priority", 100),
+            reverse=True,
+        )
+        self.defaults = policy_cfg.get("defaults", {})
+        self.overrides = policy_cfg.get("overrides", {})
 
-    def reload(self) -> None:
-        """Initialize rules/overrides from merged settings."""
-        policy_data = self.settings.get("policy", {})
-        self.defaults.update(policy_data.get("defaults", {}))
-        self.rules = [Rule(**rule) for rule in policy_data.get("rules", [])]
-        self.overrides = self.settings.get("overrides", {"users": {}, "sessions": {}})
-        
-        # Load tool categories
-        tools_config = policy_data.get("tools", {})
-        for tool_name, tool_meta in tools_config.items():
-            category = tool_meta.get("category", "safe")  # Default to safe
-            self.tool_categories[tool_name] = category
-        
-        logger.info("Policy loaded: %d rules (scenario=%s)", len(self.rules), self.settings.get("scenario", {}).get("active"))
-
-    def _check_overrides(self, context: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    def _check_overrides(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Check for manual overrides based on user ID or role."""
         user_id = context.get("user_id")
-        session_id = context.get("session_id")
+        user_role = context.get("user_role")
         if user_id and user_id in self.overrides.get("users", {}):
-            route = self.overrides["users"][user_id].get("force_route")
-            if route:
-                return {"route": route, "reason": f"Manual user override for {user_id}"}
-        if session_id and session_id in self.overrides.get("sessions", {}):
-            route = self.overrides["sessions"][session_id].get("force_route")
-            if route:
-                return {"route": route, "reason": f"Manual session override for {session_id}"}
-        return None
+            return self.overrides["users"][user_id]
+        if user_role and user_role in self.overrides.get("roles", {}):
+            return self.overrides["roles"][user_role]
+        return {}
 
     def evaluate(
         self,
@@ -158,79 +157,13 @@ class PolicyEngine:
         confidence: float = 1.0,
     ) -> Dict[str, Any]:
         """Return routing target and reason."""
+        # Add the result of your trigger to the context
+        context['is_suspicious_query'] = is_suspicious_query(args)
+
         # 1. Manual Overrides (HIGHEST PRIORITY)
         override = self._check_overrides(context)
         if override:
             return {**override, "rule_id": "override"}
 
         data = {"args": args, "context": context, "risk_score": risk_score}
-
-        # 2. TAINT-AWARE ROUTING (High Priority Security)
-        is_tainted = context.get("is_tainted", False)
-        tool_category = self.tool_categories.get(tool_name, "safe")
-        
-        if is_tainted and tool_category == "sensitive":
-            logger.warning(
-                f"[TAINT LOCKDOWN] Tainted session attempting sensitive tool: {tool_name}"
-            )
-            return {
-                "route": "shadow",
-                "reason": f"Tainted session + sensitive tool ({tool_name})",
-                "rule_id": "taint_lockdown",
-            }
-
-        # 3. PRIORITY-SORTED RULE EVALUATION
-        # Sort rules by priority (highest first)
-        sorted_rules = sorted(self.rules, key=lambda r: r.priority, reverse=True)
-        
-        for rule in sorted_rules:
-            try:
-                if rule.evaluate(tool_name, data, context):
-                    # Check if rule overrides risk score
-                    if rule.override_risk:
-                        logger.info(
-                            f"[POLICY] Rule {rule.id} matched with override_risk=true, "
-                            f"routing to {rule.action} (ignoring risk_score={risk_score:.2f})"
-                        )
-                        return {
-                            "route": rule.action,
-                            "reason": rule.description or f"Rule {rule.id}",
-                            "rule_id": rule.id,
-                        }
-                    else:
-                        return {
-                            "route": rule.action,
-                            "reason": rule.description or f"Rule {rule.id}",
-                            "rule_id": rule.id,
-                        }
-            except Exception as exc:
-                logger.error("Error evaluating rule %s: %s", rule.id, exc)
-
-        # 4. RISK THRESHOLD + CONFIDENCE CHECK
-        threshold = float(self.defaults.get("risk_threshold", 0.8))
-        min_confidence = float(self.defaults.get("min_confidence", 0.0))
-        
-        if risk_score >= threshold and confidence >= min_confidence:
-            return {
-                "route": "shadow",
-                "reason": f"Risk={risk_score:.2f} >= {threshold}, Confidence={confidence:.2f} >= {min_confidence}",
-                "rule_id": "risk_threshold",
-            }
-        elif risk_score >= threshold and confidence < min_confidence:
-            logger.warning(
-                f"[FAIL-SAFE] High risk ({risk_score:.2f}) but low confidence ({confidence:.2f}), "
-                f"defaulting to PRODUCTION (benign-first)"
-            )
-            return {
-                "route": "production",
-                "reason": f"High risk but low confidence (confidence={confidence:.2f} < {min_confidence})",
-                "rule_id": "low_confidence_failsafe",
-            }
-
-        # 5. DEFAULT: PRODUCTION (Benign-First Fail-Safe)
-        return {
-            "route": "production",
-            "reason": "Risk below threshold",
-            "rule_id": "default",
-        }
 

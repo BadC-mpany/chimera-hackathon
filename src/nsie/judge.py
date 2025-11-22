@@ -80,6 +80,7 @@ class ProbabilisticJudge:
                 temperature=0,
                 api_key=api_key,
                 base_url=base_url,
+                max_tokens=1000,
             )
 
     async def evaluate_risk(
