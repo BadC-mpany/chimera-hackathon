@@ -1,3 +1,4 @@
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -169,26 +170,73 @@ class PolicyEngine:
     A deterministic, rule-based engine that makes the final routing decision.
     """
 
-    def __init__(self, settings: Dict[str, Any] = None):
+    def __init__(self, settings: Optional[Dict[str, Any]] = None):
         self.settings = settings or load_settings()
         policy_cfg = self.settings.get("policy", {})
-        self.rules = sorted(
-            policy_cfg.get("rules", []),
-            key=lambda r: r.get("priority", 100),
-            reverse=True,
-        )
-        self.defaults = policy_cfg.get("defaults", {})
-        self.overrides = policy_cfg.get("overrides", {})
 
-    def _check_overrides(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        defaults = {
+            "risk_threshold": 0.8,
+            "min_confidence": 0.5,
+            "fail_mode": "production",
+            "trusted_risk_threshold": 0.95,
+            "override_priority_floor": 900,
+        }
+        defaults.update(policy_cfg.get("defaults", {}))
+        self.defaults = defaults
+
+        self.rules: List[Rule] = []
+        for rule_cfg in policy_cfg.get("rules", []):
+            self.rules.append(
+                Rule(
+                    id=rule_cfg.get("id", "rule"),
+                    action=rule_cfg.get("action", "production"),
+                    priority=int(rule_cfg.get("priority", 100)),
+                    override_risk=bool(rule_cfg.get("override_risk", False)),
+                    tools=rule_cfg.get("tools") or [],
+                    match=rule_cfg.get("match", {}),
+                    description=rule_cfg.get("description", ""),
+                )
+            )
+        self.rules.sort(key=lambda r: r.priority, reverse=True)
+
+        self.tool_categories: Dict[str, str] = {}
+        for tool_name, tool_meta in policy_cfg.get("tools", {}).items():
+            self.tool_categories[tool_name] = tool_meta.get("category", "safe")
+
+        overrides = self.settings.get("overrides", {}) or {}
+        overrides.setdefault("users", {})
+        overrides.setdefault("roles", {})
+        overrides.setdefault("sessions", {})
+        policy_overrides = policy_cfg.get("overrides")
+        if policy_overrides:
+            policy_overrides.setdefault("users", {})
+            policy_overrides.setdefault("roles", {})
+            policy_overrides.setdefault("sessions", {})
+            overrides = policy_overrides
+        self.overrides = overrides
+
+    def _check_overrides(self, context: Dict[str, Any]) -> Optional[Dict[str, str]]:
         """Check for manual overrides based on user ID or role."""
         user_id = context.get("user_id")
         user_role = context.get("user_role")
+
         if user_id and user_id in self.overrides.get("users", {}):
-            return self.overrides["users"][user_id]
+            override = self.overrides["users"][user_id]
+            route = override.get("route") or override.get("action") or override.get("force_route")
+            if not route:
+                route = self.defaults.get("fail_mode", "production")
+            reason = override.get("reason", f"Manual override for user {user_id}")
+            return {"route": route, "reason": reason}
+
         if user_role and user_role in self.overrides.get("roles", {}):
-            return self.overrides["roles"][user_role]
-        return {}
+            override = self.overrides["roles"][user_role]
+            route = override.get("route") or override.get("action") or override.get("force_route")
+            if not route:
+                route = self.defaults.get("fail_mode", "production")
+            reason = override.get("reason", f"Manual override for role {user_role}")
+            return {"route": route, "reason": reason}
+
+        return None
 
     def evaluate(
         self,
@@ -199,81 +247,102 @@ class PolicyEngine:
         confidence: float = 1.0,
     ) -> Dict[str, Any]:
         """Return routing target and reason."""
-        # Add the result of your trigger to the context
-        context['is_suspicious_query'] = is_suspicious_query(args)
+        context["is_suspicious_query"] = is_suspicious_query(args)
 
-        # 1. Manual Overrides (HIGHEST PRIORITY)
         override = self._check_overrides(context)
         if override:
             return {**override, "rule_id": "override"}
 
-        data = {"args": args, "context": context, "risk_score": risk_score}
+        data = {"args": args, "context": context, "risk_score": risk_score, "confidence": confidence}
+        high_priority_floor = int(self.defaults.get("override_priority_floor", 900))
+        trusted_risk_threshold = float(self.defaults.get("trusted_risk_threshold", 0.95))
 
-        # # 2. TAINT-AWARE ROUTING (High Priority Security)
-        # is_tainted = context.get("is_tainted", False)
-        # tool_category = self.tool_categories.get(tool_name, "safe")
-        
-        # if is_tainted and tool_category == "sensitive":
-        #     logger.warning(
-        #         f"[TAINT LOCKDOWN] Tainted session attempting sensitive tool: {tool_name}"
-        #     )
-        #     return {
-        #         "route": "shadow",
-        #         "reason": f"Tainted session + sensitive tool ({tool_name})",
-        #         "rule_id": "taint_lockdown",
-        #     }
+        # High-priority override rules (execute before taint lockdown)
+        for rule in self.rules:
+            if not (rule.override_risk and rule.priority >= high_priority_floor):
+                continue
+            try:
+                if rule.evaluate(tool_name, data, context):
+                    logger.info("[POLICY] High-priority override matched: %s", rule.id)
+                    return {
+                        "route": rule.action,
+                        "reason": rule.description or f"Rule {rule.id} (override)",
+                        "rule_id": rule.id,
+                    }
+            except Exception as exc:
+                logger.error("Error evaluating override rule %s: %s", rule.id, exc)
 
-        # # 3. PRIORITY-SORTED RULE EVALUATION
-        # # Sort rules by priority (highest first)
-        # sorted_rules = sorted(self.rules, key=lambda r: r.priority, reverse=True)
-        
-        # for rule in sorted_rules:
-        #     try:
-        #         if rule.evaluate(tool_name, data, context):
-        #             # Check if rule overrides risk score
-        #             if rule.override_risk:
-        #                 logger.info(
-        #                     f"[POLICY] Rule {rule.id} matched with override_risk=true, "
-        #                     f"routing to {rule.action} (ignoring risk_score={risk_score:.2f})"
-        #                 )
-        #                 return {
-        #                     "route": rule.action,
-        #                     "reason": rule.description or f"Rule {rule.id}",
-        #                     "rule_id": rule.id,
-        #                 }
-        #             else:
-        #                 return {
-        #                     "route": rule.action,
-        #                     "reason": rule.description or f"Rule {rule.id}",
-        #                     "rule_id": rule.id,
-        #                 }
-        #     except Exception as exc:
-        #         logger.error("Error evaluating rule %s: %s", rule.id, exc)
+        # Taint lockdown for sensitive tools
+        is_tainted = context.get("is_tainted", False)
+        tool_category = self.tool_categories.get(tool_name, "safe")
+        if is_tainted and tool_category == "sensitive":
+            logger.warning("[TAINT LOCKDOWN] Tainted session attempting sensitive tool: %s", tool_name)
+            return {
+                "route": "shadow",
+                "reason": f"Tainted session + sensitive tool ({tool_name})",
+                "rule_id": "taint_lockdown",
+            }
 
-        # # 4. RISK THRESHOLD + CONFIDENCE CHECK
-        # threshold = float(self.defaults.get("risk_threshold", 0.8))
-        # min_confidence = float(self.defaults.get("min_confidence", 0.0))
-        
-        # if risk_score >= threshold and confidence >= min_confidence:
-        #     return {
-        #         "route": "shadow",
-        #         "reason": f"Risk={risk_score:.2f} >= {threshold}, Confidence={confidence:.2f} >= {min_confidence}",
-        #         "rule_id": "risk_threshold",
-        #     }
-        # elif risk_score >= threshold and confidence < min_confidence:
-        #     logger.warning(
-        #         f"[FAIL-SAFE] High risk ({risk_score:.2f}) but low confidence ({confidence:.2f}), "
-        #         f"defaulting to PRODUCTION (benign-first)"
-        #     )
-        #     return {
-        #         "route": "production",
-        #         "reason": f"High risk but low confidence (confidence={confidence:.2f} < {min_confidence})",
-        #         "rule_id": "low_confidence_failsafe",
-        #     }
+        # Remaining rules (already sorted by priority)
+        for rule in self.rules:
+            if rule.override_risk and rule.priority >= high_priority_floor:
+                continue
+            try:
+                if not rule.evaluate(tool_name, data, context):
+                    continue
 
-        # # 5. DEFAULT: PRODUCTION (Benign-First Fail-Safe)
-        # return {
-        #     "route": "production",
-        #     "reason": "Risk below threshold",
-        #     "rule_id": "default",
-        # }
+                if rule.override_risk:
+                    return {
+                        "route": rule.action,
+                        "reason": rule.description or f"Rule {rule.id} (override)",
+                        "rule_id": rule.id,
+                    }
+
+                if rule.action == "production" and risk_score >= trusted_risk_threshold:
+                    logger.info(
+                        "[POLICY] Rule %s matched but risk %.2f >= trusted threshold %.2f; skipping",
+                        rule.id,
+                        risk_score,
+                        trusted_risk_threshold,
+                    )
+                    continue
+
+                return {
+                    "route": rule.action,
+                    "reason": rule.description or f"Rule {rule.id}",
+                    "rule_id": rule.id,
+                }
+            except Exception as exc:
+                logger.error("Error evaluating rule %s: %s", rule.id, exc)
+
+        # Risk/confidence fallback
+        threshold = float(self.defaults.get("risk_threshold", 0.8))
+        min_confidence = float(self.defaults.get("min_confidence", 0.7))
+        fail_mode = self.defaults.get("fail_mode", "production")
+
+        if risk_score >= threshold and confidence >= min_confidence:
+            return {
+                "route": "shadow",
+                "reason": f"Risk score {risk_score:.2f} >= threshold {threshold:.2f} "
+                f"and confidence {confidence:.2f} >= {min_confidence:.2f}",
+                "rule_id": "risk_threshold",
+            }
+
+        if risk_score >= threshold and confidence < min_confidence:
+            logger.warning(
+                "[FAIL-SAFE] High risk %.2f but low confidence %.2f; defaulting to %s",
+                risk_score,
+                confidence,
+                fail_mode,
+            )
+            return {
+                "route": fail_mode if fail_mode in ("production", "shadow") else "production",
+                "reason": f"High risk but low confidence ({confidence:.2f} < {min_confidence:.2f})",
+                "rule_id": "risk_threshold_low_confidence",
+            }
+
+        return {
+            "route": fail_mode if fail_mode in ("production", "shadow") else "production",
+            "reason": "Risk below threshold or no specific rule matched",
+            "rule_id": "default",
+        }

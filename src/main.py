@@ -1,7 +1,9 @@
 import argparse
 import asyncio
 import logging
+import os
 import sys
+
 from .ipg.proxy import Gateway
 
 # Configure logging to stderr so it doesn't interfere with stdio transport
@@ -14,9 +16,15 @@ logging.basicConfig(
 def main():
     parser = argparse.ArgumentParser(description="CHIMERA Intelligent Protocol Gateway")
     parser.add_argument("--target", required=True, help="Command to run the downstream MCP server")
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "http"),
+        default=os.getenv("CHIMERA_TRANSPORT", "stdio"),
+        help="Upstream transport mode (default: stdio; set CHIMERA_TRANSPORT to override)",
+    )
     args = parser.parse_args()
 
-    gateway = Gateway(args.target)
+    gateway = Gateway(args.target, transport_mode=args.transport)
     
     try:
         asyncio.run(gateway.start())

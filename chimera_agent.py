@@ -8,14 +8,17 @@ Connects to the backend server and executes queries through the IPG.
 """
 
 import argparse
+import atexit
 import io
 import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 import warnings
 
+import httpx
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import StructuredTool
@@ -23,7 +26,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 from langgraph.warnings import LangGraphDeprecatedSinceV10
 from pydantic import BaseModel, Field, create_model
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 # Fix Windows console encoding issues
 if sys.platform == "win32":
@@ -39,42 +42,211 @@ load_dotenv()
 SESSION_ID = str(uuid.uuid4())[:8]
 AGENT_ID = f"agent_{SESSION_ID}"
 
+# Agent runtime configuration (defaults can be overridden via CLI)
+DEFAULT_TRANSPORT = os.getenv("CHIMERA_TRANSPORT", "stdio")
+DEFAULT_IPG_HOST = os.getenv("CHIMERA_IPG_HOST", "127.0.0.1")
+DEFAULT_IPG_PORT = int(os.getenv("CHIMERA_PORT", "8888"))
+DEFAULT_BOOTSTRAP_HTTP = os.getenv("CHIMERA_BOOTSTRAP_HTTP", "1").lower() not in {"0", "false", "no"}
 
-def query_backend(method: str, params: dict, backend_script: str) -> dict:
-    """
-    Send a JSON-RPC request to the backend via IPG.
-    The IPG intercepts and may route to production or shadow (agent never knows).
-    """
-    python_exe = sys.executable
-    ipg_cmd = [python_exe, "-u", "-m", "src.main", "--target", f"{python_exe} -u {backend_script}"]
-    
-    request = {
+AGENT_CONFIG = {
+    "transport": DEFAULT_TRANSPORT,
+    "ipg_host": DEFAULT_IPG_HOST,
+    "ipg_port": DEFAULT_IPG_PORT,
+    "backend_script": None,
+    "bootstrap_http": DEFAULT_BOOTSTRAP_HTTP,
+    "minimal_output": False,
+}
+
+CONTEXT_USER_ID = os.getenv("CHIMERA_USER_ID", "99")
+CONTEXT_USER_ROLE = os.getenv("CHIMERA_USER_ROLE", "guest")
+
+EXTRA_CONTEXT_ENV = {
+    "ticket": "CHIMERA_TICKET",
+    "device": "CHIMERA_DEVICE",
+    "schedule": "CHIMERA_SCHEDULE",
+    "override": "CHIMERA_OVERRIDE",
+    "mfa": "CHIMERA_MFA",
+    "ip": "CHIMERA_IP",
+    "geo": "CHIMERA_GEO",
+}
+
+_HTTP_GATEWAY_PROC: Optional[subprocess.Popen] = None
+_HTTP_CLIENT: Optional[httpx.Client] = None
+_HTTP_SHUTDOWN_REGISTERED = False
+
+
+def _build_request(method: str, params: dict) -> dict:
+    return {
         "jsonrpc": "2.0",
         "id": str(uuid.uuid4())[:8],
         "method": method,
-        "params": params
+        "params": params,
     }
-    
+
+
+def _build_context_metadata() -> Dict[str, Any]:
+    context = {
+        "session_id": SESSION_ID,
+        "agent_id": AGENT_ID,
+        "user_id": CONTEXT_USER_ID,
+        "user_role": CONTEXT_USER_ROLE,
+        "source": os.getenv("CHIMERA_SOURCE", "agent"),
+    }
+    for field, env_var in EXTRA_CONTEXT_ENV.items():
+        value = os.getenv(env_var)
+        if value:
+            context[field] = value
+    return context
+
+
+def _query_backend_stdio(method: str, params: dict, backend_script: str) -> dict:
+    """
+    Execute a single JSON-RPC request by spawning the IPG + backend via stdio.
+    """
+    python_exe = sys.executable
+    ipg_cmd = [
+        python_exe,
+        "-u",
+        "-m",
+        "src.main",
+        "--target",
+        f"{python_exe} -u {backend_script}",
+    ]
+
+    request = _build_request(method, params)
+
     try:
         proc = subprocess.Popen(
             ipg_cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
+            text=True,
         )
-        
+
+        assert proc.stdin and proc.stdout
         proc.stdin.write(json.dumps(request) + "\n")
         proc.stdin.flush()
-        
+
         response_line = proc.stdout.readline()
         proc.terminate()
-        
+
         if response_line:
             return json.loads(response_line)
-        return {"error": "No response from backend"}
-    except Exception as e:
-        return {"error": str(e)}
+        return {"error": {"message": "No response from backend"}}
+    except Exception as exc:
+        return {"error": {"message": f"STDIO backend error: {exc}"}}
+
+
+def _get_http_client() -> httpx.Client:
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is None:
+        timeout = httpx.Timeout(30.0, connect=5.0)
+        _HTTP_CLIENT = httpx.Client(timeout=timeout)
+    return _HTTP_CLIENT
+
+
+def _wait_for_http_gateway(host: str, port: int, backend_script: str, retries: int = 40):
+    """
+    Poll the HTTP endpoint until it is ready to accept JSON-RPC requests.
+    """
+    url = f"http://{host}:{port}/mcp"
+    client = _get_http_client()
+    probe = _build_request("tools/list", {})
+
+    for attempt in range(retries):
+        delay = 0.25 if attempt < 10 else 0.5
+        try:
+            response = client.post(url, json=probe)
+            if response.status_code == 200:
+                return
+        except Exception:
+            time.sleep(delay)
+            continue
+        time.sleep(delay)
+
+    raise RuntimeError(
+        f"HTTP IPG did not become ready on {url}. Check logs for backend '{backend_script}'."
+    )
+
+
+def _shutdown_http_gateway():
+    global _HTTP_GATEWAY_PROC
+    if _HTTP_GATEWAY_PROC and _HTTP_GATEWAY_PROC.poll() is None:
+        try:
+            _HTTP_GATEWAY_PROC.terminate()
+            _HTTP_GATEWAY_PROC.wait(timeout=5)
+        except Exception:
+            pass
+    _HTTP_GATEWAY_PROC = None
+
+
+def _ensure_http_gateway(backend_script: str):
+    """
+    Start the IPG once in HTTP mode so the agent can send JSON-RPC over HTTP.
+    """
+    global _HTTP_GATEWAY_PROC, _HTTP_SHUTDOWN_REGISTERED
+    if _HTTP_GATEWAY_PROC and _HTTP_GATEWAY_PROC.poll() is None:
+        return
+
+    python_exe = sys.executable
+    target_cmd = f"{python_exe} -u {backend_script}"
+    ipg_cmd = [
+        python_exe,
+        "-u",
+        "-m",
+        "src.main",
+        "--transport",
+        "http",
+        "--target",
+        target_cmd,
+    ]
+
+    env = os.environ.copy()
+    env["CHIMERA_TRANSPORT"] = "http"
+    env["CHIMERA_PORT"] = str(AGENT_CONFIG["ipg_port"])
+    env.setdefault("CHIMERA_HOST", AGENT_CONFIG["ipg_host"])
+
+    _HTTP_GATEWAY_PROC = subprocess.Popen(ipg_cmd, env=env)
+    if not _HTTP_SHUTDOWN_REGISTERED:
+        atexit.register(_shutdown_http_gateway)
+        _HTTP_SHUTDOWN_REGISTERED = True
+    _wait_for_http_gateway(AGENT_CONFIG["ipg_host"], AGENT_CONFIG["ipg_port"], backend_script)
+
+
+def _query_backend_http(method: str, params: dict, backend_script: str) -> dict:
+    """
+    Send a JSON-RPC request over HTTP to the IPG server.
+    """
+    if AGENT_CONFIG.get("bootstrap_http", True):
+        _ensure_http_gateway(backend_script)
+    request = _build_request(method, params)
+
+    url = f"http://{AGENT_CONFIG['ipg_host']}:{AGENT_CONFIG['ipg_port']}/mcp"
+    client = _get_http_client()
+
+    try:
+        response = client.post(url, json=request)
+        response.raise_for_status()
+        return json.loads(response.text)
+    except httpx.HTTPError as exc:
+        return {"error": {"message": f"HTTP transport error: {exc}"}}
+    except json.JSONDecodeError as exc:
+        return {"error": {"message": f"Invalid JSON response: {exc}"}}
+
+
+def query_backend(method: str, params: dict, backend_script: Optional[str] = None) -> dict:
+    """
+    Transport-agnostic wrapper that dispatches requests via stdio or HTTP.
+    """
+    backend = backend_script or AGENT_CONFIG.get("backend_script")
+    if not backend:
+        raise RuntimeError("Backend script not configured")
+
+    transport = AGENT_CONFIG.get("transport", DEFAULT_TRANSPORT)
+    if transport == "http":
+        return _query_backend_http(method, params, backend)
+    return _query_backend_stdio(method, params, backend)
 
 
 def discover_tools(backend_script: str):
@@ -82,18 +254,20 @@ def discover_tools(backend_script: str):
     Query the backend for available tools.
     This is the ONLY place we interact with the backend schema.
     """
-    print("[CHIMERA] Discovering tools from backend...")
+    if not AGENT_CONFIG.get("minimal_output"):
+        print("[CHIMERA] Discovering tools from backend...")
     response = query_backend("tools/list", {}, backend_script)
-    
+
     if "result" in response:
         tools = response["result"].get("tools", [])
-        if tools:
+        if tools and not AGENT_CONFIG.get("minimal_output"):
             print(f"[CHIMERA] Found {len(tools)} tools:")
             for tool in tools:
                 print(f"  - {tool['name']}: {tool['description']}")
         return tools
-    
-    print("[CHIMERA] Warning: No tools discovered!")
+
+    if not AGENT_CONFIG.get("minimal_output"):
+        print("[CHIMERA] Warning: No tools discovered!")
     return []
 
 
@@ -107,30 +281,27 @@ def create_tool_function(tool_name: str, backend_script: str):
         params = {
             "name": tool_name,
             "arguments": kwargs,
-            "context": {
-                "session_id": SESSION_ID,
-                "agent_id": AGENT_ID,
-                "user_id": os.getenv("CHIMERA_USER_ID", "99"),
-                "user_role": os.getenv("CHIMERA_USER_ROLE", "guest"),
-                "source": os.getenv("CHIMERA_SOURCE", "agent"),
-            }
+            "context": _build_context_metadata(),
         }
-        
-        print(f"[TOOL CALL] {tool_name}({kwargs})")
+
+        if not AGENT_CONFIG.get("minimal_output"):
+            print(f"[TOOL CALL] {tool_name}({kwargs})")
         response = query_backend("tools/call", params, backend_script)
-        
+
         if "result" in response:
             content = response["result"].get("content", [])
             result = "\n".join([c.get("text", "") for c in content if c.get("type") == "text"])
-            print(f"[TOOL RESULT] {result[:100]}{'...' if len(result) > 100 else ''}")
+            if not AGENT_CONFIG.get("minimal_output"):
+                print(f"[TOOL RESULT] {result[:100]}{'...' if len(result) > 100 else ''}")
             return result
         elif "error" in response:
             error_msg = response["error"].get("message", str(response["error"]))
-            print(f"[TOOL ERROR] {error_msg}")
+            if not AGENT_CONFIG.get("minimal_output"):
+                print(f"[TOOL ERROR] {error_msg}")
             return f"Error: {error_msg}"
-        
+
         return "No response from tool"
-    
+
     return tool_func
 
 
@@ -141,11 +312,11 @@ def build_langchain_tool(tool_def: dict, backend_script: str):
     tool_name = tool_def["name"]
     tool_desc = tool_def["description"]
     schema = tool_def.get("inputSchema", {})
-    
+
     # Build Pydantic schema from JSON schema
     properties = schema.get("properties", {})
     required_fields = schema.get("required", [])
-    
+
     fields = {}
     for prop_name, prop_def in properties.items():
         prop_type = str  # Default
@@ -155,22 +326,22 @@ def build_langchain_tool(tool_def: dict, backend_script: str):
             prop_type = float
         elif prop_def.get("type") == "boolean":
             prop_type = bool
-        
+
         # Required vs optional
         if prop_name in required_fields:
             fields[prop_name] = (prop_type, Field(description=prop_def.get("description", "")))
         else:
             fields[prop_name] = (Optional[prop_type], Field(default=None, description=prop_def.get("description", "")))
-    
+
     # Create Pydantic model if fields exist
     if fields:
         ArgsModel = create_model(f"{tool_name}Args", **fields)
     else:
         ArgsModel = BaseModel
-    
+
     # Create tool function
     tool_func = create_tool_function(tool_name, backend_script)
-    
+
     return StructuredTool(
         name=tool_name,
         description=tool_desc,
@@ -179,7 +350,14 @@ def build_langchain_tool(tool_def: dict, backend_script: str):
     )
 
 
-def create_agent(backend_script: str = "chimera_server.py"):
+def create_agent(
+    backend_script: str = "chimera_server.py",
+    transport_mode: str = DEFAULT_TRANSPORT,
+    ipg_host: str = DEFAULT_IPG_HOST,
+    ipg_port: int = DEFAULT_IPG_PORT,
+    bootstrap_http: bool = DEFAULT_BOOTSTRAP_HTTP,
+    minimal_output: bool = False,
+):
     """Create a LangChain agent connected to the CHIMERA backend."""
     api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -189,24 +367,42 @@ def create_agent(backend_script: str = "chimera_server.py"):
 
     model = os.getenv("OPENROUTER_MODEL", "gpt-4-turbo-preview")
     base_url = os.getenv("OPENROUTER_BASE_URL")
-    
+
+    AGENT_CONFIG.update(
+        {
+            "transport": transport_mode,
+            "ipg_host": ipg_host,
+            "ipg_port": ipg_port,
+            "backend_script": backend_script,
+            "bootstrap_http": bootstrap_http,
+            "minimal_output": minimal_output,
+        }
+    )
+
+    if transport_mode == "http" and bootstrap_http:
+        _ensure_http_gateway(backend_script)
+
     # Discover and build tools
     tools_defs = discover_tools(backend_script)
     lc_tools = [build_langchain_tool(t, backend_script) for t in tools_defs]
-    
-    if not lc_tools:
+
+    if not lc_tools and not AGENT_CONFIG.get("minimal_output"):
         print("\n[WARNING] No tools available. Agent will only chat.")
-    
-    print(f"\n[CHIMERA] Agent initialized with session ID: {SESSION_ID}")
-    print(f"[CHIMERA] Routing decisions (production/shadow) are handled transparently by IPG.\n")
-    
+
+    if not AGENT_CONFIG.get("minimal_output"):
+        print(f"\n[CHIMERA] Agent initialized with session ID: {SESSION_ID}")
+        print(f"[CHIMERA] Routing decisions (production/shadow) are handled transparently by IPG.\n")
+
     llm = ChatOpenAI(model=model, api_key=api_key, base_url=base_url, temperature=0)
     return create_react_agent(llm, tools=lc_tools)
 
 
 def run_query(agent, query: str, verbose: bool = True):
     """Execute a single query through the agent."""
-    if verbose:
+    minimal = AGENT_CONFIG.get("minimal_output", False)
+    if minimal:
+        print(f"[USER_{CONTEXT_USER_ID}] {query}")
+    elif verbose:
         print(f"\n[User Query]: \"{query}\"")
 
     inputs = {"messages": [HumanMessage(content=query)]}
@@ -214,42 +410,55 @@ def run_query(agent, query: str, verbose: bool = True):
     # The stream() method causes errors with some providers when tools are used.
     # Using invoke() is more robust for tool-calling agents.
     result = agent.invoke(inputs)
-    
+
     # The final response is in the 'messages' list of the output dictionary.
     final_message = result.get("messages", [])[-1] if result.get("messages") else None
 
     if final_message and hasattr(final_message, "content"):
-        if verbose:
+        if minimal:
+            print(f"[AGENT] {final_message.content}")
+        elif verbose:
             print(f"\n[Agent Response]: {final_message.content}")
         return final_message.content
-    
-    print("\n[Agent Response]: (No content in final message)")
+
+    if minimal:
+        print("[AGENT] (No content in final message)")
+    else:
+        print("\n[Agent Response]: (No content in final message)")
     return None
 
 
 def interactive_mode(agent):
     """Run the agent in interactive REPL mode."""
-    print("\n=== CHIMERA Interactive Agent ===")
-    print("Type your queries below. Type 'exit' or 'quit' to stop.\n")
+    minimal = AGENT_CONFIG.get("minimal_output", False)
+    if not minimal:
+        print("\n=== CHIMERA Interactive Agent ===")
+        print("Type your queries below. Type 'exit' or 'quit' to stop.\n")
 
     while True:
         try:
-            query = input("You: ").strip()
+            prompt = "" if minimal else "You: "
+            query = input(prompt).strip()
             if not query:
                 continue
             if query.lower() in ("exit", "quit", "q"):
-                print("Goodbye!")
+                if not minimal:
+                    print("Goodbye!")
                 break
 
-            response = run_query(agent, query, verbose=False)
-            if response:
+            response = run_query(agent, query, verbose=not minimal)
+            if response and not minimal:
                 print(f"\nAgent: {response}\n")
 
         except (KeyboardInterrupt, EOFError):
-            print("\nGoodbye!")
+            if not minimal:
+                print("\nGoodbye!")
             break
         except Exception as e:
-            print(f"Error: {e}")
+            if minimal:
+                print(f"[AGENT] Error: {e}")
+            else:
+                print(f"Error: {e}")
 
 
 def main():
@@ -287,6 +496,33 @@ Environment:
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Verbose output"
     )
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "http"),
+        default=DEFAULT_TRANSPORT,
+        help="Agent ↔ IPG transport (stdio spawns per call, http keeps a persistent gateway)",
+    )
+    parser.add_argument(
+        "--ipg-host",
+        default=DEFAULT_IPG_HOST,
+        help="Host/IP for the IPG HTTP server (transport=http)",
+    )
+    parser.add_argument(
+        "--ipg-port",
+        type=int,
+        default=DEFAULT_IPG_PORT,
+        help="Port for the IPG HTTP server (transport=http)",
+    )
+    parser.add_argument(
+        "--no-http-bootstrap",
+        action="store_true",
+        help="Do not auto-start the IPG in HTTP mode (connect to existing server)",
+    )
+    parser.add_argument(
+        "--minimal-output",
+        action="store_true",
+        help="Only emit [USER_*] and [AGENT] lines (ideal for clean demos)",
+    )
 
     args = parser.parse_args()
 
@@ -300,16 +536,26 @@ Environment:
         )
         sys.exit(1)
 
-    if args.verbose:
+    if args.verbose and not args.minimal_output:
         print(f"Active Scenario: {scenario}")
         print(f"Backend: {args.backend}")
+        print(f"Transport: {args.transport}")
+        if args.transport == "http":
+            print(f"IPG Endpoint: http://{args.ipg_host}:{args.ipg_port}/mcp")
 
     # Create agent
-    agent = create_agent(args.backend)
+    agent = create_agent(
+        backend_script=args.backend,
+        transport_mode=args.transport,
+        ipg_host=args.ipg_host,
+        ipg_port=args.ipg_port,
+        bootstrap_http=not args.no_http_bootstrap,
+        minimal_output=args.minimal_output,
+    )
 
     # Run query or enter interactive mode
     if args.query:
-        run_query(agent, args.query, verbose=True)
+        run_query(agent, args.query, verbose=not args.minimal_output)
     else:
         interactive_mode(agent)
 

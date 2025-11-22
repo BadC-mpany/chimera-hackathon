@@ -247,6 +247,15 @@ Agent: The file contains: Project: Chimera-SHADOW, Sequence ID: FAKE-643...
 python chimera_agent.py --query "read the secret formula"
 ```
 
+**HTTP Transport (Persistent Gateway + Remote Agent):**
+
+```powershell
+$env:CHIMERA_SCENARIO="aetheria"
+python chimera_agent.py --transport http --ipg-host "127.0.0.1" --ipg-port 8888
+```
+
+The agent will automatically launch the IPG in HTTP mode (bound to `http://127.0.0.1:8888/mcp`) and keep it running for the duration of the session. Tool discovery and calls now reuse the same gateway, which mirrors a deployed setup or remote ReAct agent hitting the MCP endpoint. Keep the backend (`chimera_server.py`) in its default stdio mode—only the agent ↔ IPG hop switches to HTTP. When `--transport` is omitted, the default `stdio` mode spawns a short-lived IPG per tool call, which is convenient for local debugging.
+
 ## Advanced Features
 
 ### Context-Aware Routing
