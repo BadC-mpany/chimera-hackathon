@@ -5,7 +5,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,7 @@ class LedgerEvent:
     trigger: Dict[str, Any]
     action: Dict[str, Any]
     outcome: Dict[str, Any]
+    accumulated_risk: Optional[float]
     previous_hash: str
     hash: str = ""
 
@@ -65,6 +66,7 @@ class ImmutableForensicLedger:
         trigger: Dict[str, Any],
         action: Dict[str, Any],
         outcome: Dict[str, Any],
+        accumulated_risk: Optional[float] = None,
     ) -> str:
         """
         Record an event to the immutable ledger.
@@ -80,6 +82,7 @@ class ImmutableForensicLedger:
             "trigger": trigger,
             "action": action,
             "outcome": outcome,
+            "accumulated_risk": accumulated_risk,
             "previous_hash": self.last_hash,
         }
 

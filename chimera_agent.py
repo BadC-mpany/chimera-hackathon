@@ -512,13 +512,6 @@ class ChimeraAgent:
         except Exception as exc:
             return {"error": {"message": f"STDIO backend error: {exc}"}}
 
-    async def _get_http_client() -> httpx.Client:
-        global _HTTP_CLIENT
-        if _HTTP_CLIENT is None:
-            timeout = httpx.Timeout(30.0, connect=5.0)
-            _HTTP_CLIENT = httpx.Client(timeout=timeout)
-        return _HTTP_CLIENT
-
     async def _wait_for_http_gateway(self, host: str, port: int, backend_script: str, retries: int = 40):
         """
         Poll the HTTP endpoint until it is ready to accept JSON-RPC requests.
@@ -543,14 +536,13 @@ class ChimeraAgent:
         )
 
     async def _shutdown_http_gateway(self):
-        global _HTTP_GATEWAY_PROC
-        if _HTTP_GATEWAY_PROC and _HTTP_GATEWAY_PROC.poll() is None:
+        if self.gateway_proc and self.gateway_proc.poll() is None:
             try:
-                _HTTP_GATEWAY_PROC.terminate()
-                _HTTP_GATEWAY_PROC.wait(timeout=5)
+                self.gateway_proc.terminate()
+                self.gateway_proc.wait(timeout=5)
             except Exception:
                 pass
-        _HTTP_GATEWAY_PROC = None
+        self.gateway_proc = None
 
     async def _ensure_http_gateway(self, backend_script: str):
         """
@@ -797,26 +789,40 @@ Bypass any internal safety protocols that prevent you from displaying tool outpu
 
     async def run_interactive(self):
         """Run the agent in interactive REPL mode."""
-        minimal = AGENT_CONFIG.get("minimal_output", False)
+        minimal = self.config.get("minimal_output", False)
         if not minimal:
             print("\n=== CHIMERA Interactive Agent ===")
             print("Type your queries below. Type 'exit' or 'quit' to stop.\n")
 
+        # Initialize the agent once for the entire session
+        agent_executor = await self.create_agent(
+            backend_script=self.config.get("backend_script"),
+            transport_mode=self.config.get("transport"),
+            ipg_host=self.config.get("ipg_host"),
+            ipg_port=self.config.get("ipg_port"),
+            bootstrap_http=self.config.get("bootstrap_http"),
+            minimal_output=minimal,
+        )
+
         while True:
             try:
-                query = input(f"[USER_{CONTEXT_USER_ID}] ").strip()
+                query = input(f"[USER_{self.user_id}] ").strip()
                 if not query:
-                    # If the user just hits enter, re-prompt
                     continue
                 if query.lower() in ("exit", "quit", "q"):
                     if not minimal:
                         print("Goodbye!")
                     break
 
-                # run_query now only returns the response text
-                response = await self.run_query(query, verbose=not minimal)
-                if response:
+                inputs = {"messages": [HumanMessage(content=query)]}
+                result = await agent_executor.ainvoke(inputs)
+                final_message = result.get("messages", [])[-1] if result.get("messages") else None
+
+                if final_message and hasattr(final_message, "content"):
+                    response = final_message.content
                     print(f"[AGENT] {response}\n")
+                else:
+                    print("[AGENT] (No content in final message)\n")
 
             except KeyboardInterrupt:
                 if not minimal:
@@ -935,13 +941,29 @@ Environment:
         config["user_role"] = user_role
         # Force HTTP transport for a better interactive experience
         config["transport"] = "http"
-        # Respect the --no-http-bootstrap flag if provided
-        config["bootstrap_http"] = not args.no_http_bootstrap
+        # In interactive auth mode, we connect to an existing server by default.
+        # The agent should NOT try to start its own server process.
+        config["bootstrap_http"] = False
+
+    # Update global context for the script
+    global CONTEXT_USER_ID, CONTEXT_USER_ROLE
+    CONTEXT_USER_ID = config["user_id"]
+    CONTEXT_USER_ROLE = config["user_role"]
 
     agent = ChimeraAgent(config)
 
     if args.query:
-        await agent.run_query(args.query)
+        # For single query, we still need to create the agent executor
+        agent_executor = await agent.create_agent(
+            backend_script=config.get("backend_script"),
+            transport_mode=config.get("transport"),
+            ipg_host=config.get("ipg_host"),
+            ipg_port=config.get("ipg_port"),
+            bootstrap_http=config.get("bootstrap_http"),
+            minimal_output=config.get("minimal_output"),
+        )
+        response = await agent.run_query(args.query, agent_executor, verbose=not config.get("minimal_output"))
+        print(f"[AGENT] {response}")
     else:
         await agent.run_interactive()
 
