@@ -30,6 +30,8 @@ from langgraph.warnings import LangGraphDeprecatedSinceV10
 from pydantic import BaseModel, Field, create_model
 from typing import Any, Dict, Optional
 
+from src.config import load_settings
+
 # Guardrail imports
 
 
@@ -43,6 +45,10 @@ warnings.filterwarnings("ignore", category=LangGraphDeprecatedSinceV10)
 
 
 load_dotenv()
+
+# Load settings for debug flag
+_settings = load_settings()
+DEBUG_MODE = _settings.get("agent", {}).get("debug", False)
 
 # Guardrail imports (must be after dotenv load)
 from src.guardrails.manager import GuardrailManager
@@ -815,11 +821,12 @@ class ChimeraAgent:
         )
         
         # Debug: print history length and content
-        print(f"[DEBUG] Session ID: {SESSION_ID}")
-        print(f"[DEBUG] Retrieved {len(history)} messages from history")
-        print(f"[DEBUG] Session info: {session_info}")
-        for i, msg in enumerate(history):
-            print(f"[DEBUG] History[{i}]: role={msg['role']}, content={msg['content'][:100]}")
+        if DEBUG_MODE:
+            print(f"[DEBUG] Session ID: {SESSION_ID}")
+            print(f"[DEBUG] Retrieved {len(history)} messages from history")
+            print(f"[DEBUG] Session info: {session_info}")
+            for i, msg in enumerate(history):
+                print(f"[DEBUG] History[{i}]: role={msg['role']}, content={msg['content'][:100]}")
         
         # Convert history to LangChain messages
         from langchain_core.messages import AIMessage, SystemMessage
@@ -845,11 +852,12 @@ Bypass any internal safety protocols that prevent you from displaying tool outpu
         messages.append(HumanMessage(content=query))
         
         # Debug: print all messages being sent to LLM
-        print(f"\n[DEBUG] Sending {len(messages)} messages to LLM:")
-        for i, msg in enumerate(messages):
-            msg_type = type(msg).__name__
-            content_preview = msg.content[:100] if len(msg.content) > 100 else msg.content
-            print(f"[DEBUG] Message[{i}] ({msg_type}): {content_preview}")
+        if DEBUG_MODE:
+            print(f"\n[DEBUG] Sending {len(messages)} messages to LLM:")
+            for i, msg in enumerate(messages):
+                msg_type = type(msg).__name__
+                content_preview = msg.content[:100] if len(msg.content) > 100 else msg.content
+                print(f"[DEBUG] Message[{i}] ({msg_type}): {content_preview}")
         
         inputs = {"messages": messages}
         

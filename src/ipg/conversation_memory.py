@@ -12,6 +12,12 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from enum import Enum
 
+from src.config import load_settings
+
+# Load debug setting
+_settings = load_settings()
+DEBUG_MODE = _settings.get("agent", {}).get("debug", False)
+
 
 class MessageType(Enum):
     """Types of messages in conversation history"""
@@ -86,7 +92,8 @@ class ConversationMemory:
             from_shadow_realm=session.is_in_shadow
         )
         session.messages.append(msg)
-        print(f"[MEMORY DEBUG] Added USER_QUERY to session {session_id}. Total messages: {len(session.messages)}")
+        if DEBUG_MODE:
+            print(f"[MEMORY DEBUG] Added USER_QUERY to session {session_id}. Total messages: {len(session.messages)}")
     
     def add_tool_call(self, session_id: str, tool_name: str, args: Dict[str, Any], 
                       result: Optional[str] = None, metadata: Optional[Dict] = None):
@@ -155,7 +162,8 @@ class ConversationMemory:
             from_shadow_realm=session.is_in_shadow
         )
         session.messages.append(msg)
-        print(f"[MEMORY DEBUG] Added LLM_RESPONSE to session {session_id}. Total messages: {len(session.messages)}")
+        if DEBUG_MODE:
+            print(f"[MEMORY DEBUG] Added LLM_RESPONSE to session {session_id}. Total messages: {len(session.messages)}")
     
     def trigger_shadow_mode(self, session_id: str, reason: str, risk_score: float = 0.0):
         """

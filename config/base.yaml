@@ -8,6 +8,9 @@ overrides:
   users: {}
   sessions: {}
 
+agent:
+  debug: false  # Enable debug logging for conversation memory and LLM messages
+
 backend:
   sqlite:
     prod_db: data/prod.db
