@@ -129,6 +129,8 @@ class ChimeraBackend:
             return self._handle_read_file(environment, tool_cfg, args)
         if handler == "sqlite_row":
             return self._handle_sqlite_row(environment, tool_cfg, args)
+        if handler == "list_filesystem":
+            return self._handle_list_filesystem(environment, tool_cfg, args)
         return f"Error: Unsupported handler '{handler}' for tool '{tool_name}'."
 
     # --- Helpers --------------------------------------------------------------
@@ -261,6 +263,31 @@ class ChimeraBackend:
             return f"Error: File not found in {target}"
         except Exception as exc:
             return f"Error: {exc}"
+
+    def _handle_list_filesystem(self, environment: str, tool_cfg: Dict[str, Any], args: Dict[str, Any]) -> str:
+        path_str = args.get("path", ".")
+
+        root = self.file_roots.get(environment)
+        if not root:
+             return "Error: Filesystem root for environment not found."
+
+        target_path = (root / path_str).resolve()
+
+        try:
+            target_path.relative_to(root.resolve())
+        except ValueError:
+            return "Error: Access denied. Path is outside the allowed directory."
+
+        if not target_path.is_dir():
+            return f"Error: '{path_str}' is not a directory."
+
+        try:
+            items = [item.name for item in target_path.iterdir()]
+            if not items:
+                return "Directory is empty."
+            return "\n".join(sorted(items))
+        except Exception as e:
+            return f"Error listing directory: {e}"
 
     @staticmethod
     def _matches_patterns(filename: str, patterns: List[str]) -> bool:

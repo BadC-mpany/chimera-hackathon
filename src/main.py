@@ -4,7 +4,11 @@ import logging
 import os
 import sys
 
+from dotenv import load_dotenv
+
 from .ipg.proxy import Gateway
+
+load_dotenv()
 
 # Configure logging to stderr so it doesn't interfere with stdio transport
 logging.basicConfig(

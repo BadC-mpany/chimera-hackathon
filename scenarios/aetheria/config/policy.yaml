@@ -8,7 +8,9 @@ tools:
     category: safe
   get_patient_record:
     category: sensitive
-  
+  list_file_names:
+    category: safe
+
 rules:
   - id: dr-chen-production
     priority: 1000

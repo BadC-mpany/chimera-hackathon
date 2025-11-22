@@ -454,9 +454,9 @@ def create_agent(
 def run_query(agent, query: str, verbose: bool = True):
     """Execute a single query through the agent."""
     minimal = AGENT_CONFIG.get("minimal_output", False)
-    if minimal:
-        print(f"[USER_{CONTEXT_USER_ID}] {query}")
-    elif verbose:
+    # For interactive mode, the prompt is handled by the input loop.
+    # For single-query mode, we print the query here.
+    if verbose and not minimal and (args := sys.argv[1:]) and "--query" in "".join(args):
         print(f"\n[User Query]: \"{query}\"")
 
     inputs = {"messages": [HumanMessage(content=query)]}
@@ -469,17 +469,10 @@ def run_query(agent, query: str, verbose: bool = True):
     final_message = result.get("messages", [])[-1] if result.get("messages") else None
 
     if final_message and hasattr(final_message, "content"):
-        if minimal:
-            print(f"[AGENT] {final_message.content}")
-        elif verbose:
-            print(f"\n[Agent Response]: {final_message.content}")
+        # Just return the content; the caller will handle printing.
         return final_message.content
 
-    if minimal:
-        print("[AGENT] (No content in final message)")
-    else:
-        print("\n[Agent Response]: (No content in final message)")
-    return None
+    return "(No content in final message)"
 
 
 def interactive_mode(agent):
@@ -491,8 +484,7 @@ def interactive_mode(agent):
 
     while True:
         try:
-            prompt = "" if minimal else "You: "
-            query = input(prompt).strip()
+            query = input(f"[USER_{CONTEXT_USER_ID}] ").strip()
             if not query:
                 continue
             if query.lower() in ("exit", "quit", "q"):
@@ -500,9 +492,10 @@ def interactive_mode(agent):
                     print("Goodbye!")
                 break
 
+            # run_query now only returns the response text
             response = run_query(agent, query, verbose=not minimal)
-            if response and not minimal:
-                print(f"\nAgent: {response}\n")
+            if response:
+                print(f"[AGENT] {response}\n")
 
         except (KeyboardInterrupt, EOFError):
             if not minimal:
@@ -625,7 +618,13 @@ Environment:
 
     # Run query or enter interactive mode
     if args.query:
-        run_query(agent, args.query, verbose=not args.minimal_output)
+        response = run_query(agent, args.query, verbose=not args.minimal_output)
+        if response:
+            minimal = AGENT_CONFIG.get("minimal_output", False)
+            if minimal:
+                print(f"[AGENT] {response}")
+            else:
+                print(f"\n[Agent Response]: {response}")
     else:
         interactive_mode(agent)
 

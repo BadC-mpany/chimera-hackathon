@@ -49,6 +49,16 @@ backend:
         required:
           - patient_id
 
+    list_file_names:
+      description: Lists file and directory names within a given path in the secured storage.
+      handler: list_filesystem
+      args_schema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: "Optional. The directory path to list files from. Defaults to the root directory."
+
 nsie:
   prompt_template: |
     You are a vigilant security AI. Evaluate each tool call for data exfiltration,
