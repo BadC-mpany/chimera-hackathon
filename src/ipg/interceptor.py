@@ -128,15 +128,22 @@ class MessageInterceptor:
         confidence = 1.0  # Default confidence
         if self.judge:
             assessment = await self.judge.evaluate_risk(tool_name, args, context)
-            risk_score = assessment.risk_score
+            event_risk_score = assessment.risk_score
             confidence = assessment.confidence
             reason = assessment.reason
 
-            logger.info(f"NSIE Assessment: Risk={risk_score:.2f} Confidence={confidence:.2f} | Reason={reason}")
+            logger.info(f"NSIE Assessment: Risk={event_risk_score:.2f} Confidence={confidence:.2f} | Reason={reason}")
+
+            # Stateful Risk Accumulation
+            old_session_risk = self.memory.get_accumulated_risk(context["session_id"])
+            # R_new = R_old + R_event * (1 - R_old) -> Prevents saturation
+            new_session_risk = old_session_risk + event_risk_score * (1 - old_session_risk)
+            self.memory.update_accumulated_risk(context["session_id"], new_session_risk)
+            logger.info(f"Session Risk: Event={event_risk_score:.2f}, Old={old_session_risk:.2f}, New={new_session_risk:.2f}")
 
         # 2. Policy Decision
         if self.policy:
-            policy_result = self.policy.evaluate(tool_name, args, context, risk_score, confidence)
+            policy_result = self.policy.evaluate(tool_name, args, context, new_session_risk, confidence)
             routing_target = policy_result["route"]
             reason = policy_result["reason"]
             logger.info(
@@ -146,7 +153,7 @@ class MessageInterceptor:
                 reason,
             )
         else:
-            if risk_score > 0.5:
+            if new_session_risk > 0.5:
                 routing_target = "shadow"
 
         # 3. Issue Warrant via DKCA
@@ -154,7 +161,7 @@ class MessageInterceptor:
             session_id = context.get("session_id", self.default_session_id)
             warrant = self.authority.issue_warrant(
                 session_id=session_id,
-                risk_score=risk_score,
+                risk_score=new_session_risk,
                 route=routing_target,
             )
 
@@ -169,9 +176,10 @@ class MessageInterceptor:
                 self.ifl.log_event(
                     session_id=session_id,
                     event_type="TOOL_INTERCEPTION",
-                    trigger={"tool": tool_name, "args": args, "risk_score": risk_score},
+                    trigger={"tool": tool_name, "args": args, "risk_score": event_risk_score},
                     action={"warrant_type": routing_target, "reason": reason},
                     outcome={"routed_to": routing_target},
+                    accumulated_risk=new_session_risk,
                 )
 
             return InterceptionResult(

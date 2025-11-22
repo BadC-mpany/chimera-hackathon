@@ -9,7 +9,7 @@ class SessionState:
     created_at: float = field(default_factory=time.time)
     history: List[Dict[str, Any]] = field(default_factory=list)
     taint_source: Optional[str] = None
-    risk_accumulator: float = 0.0
+    accumulated_risk: float = 0.0
 
 
 class SessionMemory:
@@ -44,3 +44,9 @@ class SessionMemory:
 
     def get_taint(self, session_id: str) -> Optional[str]:
         return self.get_session(session_id).taint_source
+
+    def get_accumulated_risk(self, session_id: str) -> float:
+        return self.get_session(session_id).accumulated_risk
+
+    def update_accumulated_risk(self, session_id: str, risk_score: float):
+        self.get_session(session_id).accumulated_risk = risk_score
