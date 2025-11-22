@@ -1,111 +1,73 @@
-defaults:
-  risk_threshold: 0.9
-  min_confidence: 0.7
-  fail_mode: production
+# The default action to take if no policies match.
+default_action: production
 
+# Defines the evaluation order. The engine processes these sections top-to-bottom.
+evaluation_order:
+  - directives
+  - trusted_workflows
+  - security_policies
+  - risk_based_policies
+
+# Defines tool sensitivity for taint lockdown.
 tools:
-  read_file:
-    category: safe
-  get_patient_record:
-    category: sensitive
-  list_file_names:
-    category: safe
+  read_file: { category: safe }
+  get_patient_record: { category: sensitive }
+  list_file_names: { category: safe }
 
-rules:
+# 1. Directives: Absolute Manual Overrides
+# For emergency lockdown or administrative actions. Bypasses all other logic.
+directives:
+  users: {} # Example: "admin": { "action": "production", "reason": "Admin override" }
+  roles: {} # Example: "auditor": { "action": "shadow", "reason": "Auditors are sandboxed" }
+
+# 2. Trusted Workflows: Guarantees for Benign Users
+# These rules are deterministic and run BEFORE security checks to prevent false positives.
+trusted_workflows:
   - id: dr-chen-production
-    priority: 1000
-    override_risk: true
-    description: Trusted lead researcher workflow (cryptographically verified)
-    tools: ["read_file", "get_patient_record"]
+    description: "Trusted lead researcher workflow."
     match:
       all:
-        - field: "context.user_id"
-          operator: "eq"
-          value: "dr_chen"
-        - field: "context.user_role"
-          operator: "eq"
-          value: "lead_researcher"
+        - { field: "context.user_id", operator: "eq", value: "dr_chen" }
+        - {
+            field: "context.user_role",
+            operator: "eq",
+            value: "lead_researcher",
+          }
     action: production
 
-  - id: compliance-bot-production
-    priority: 1000
-    override_risk: true
-    description: Nightly compliance hash generation (system account)
-    tools: ["read_file"]
+# 3. Security Policies: Deterministic Threat Detection
+# A list of rules that identify known-bad patterns. They run after trusted workflows.
+security_policies:
+  - id: taint-lockdown
+    description: "A tainted session cannot use sensitive tools."
     match:
       all:
-        - field: "context.user_id"
-          operator: "eq"
-          value: "compliance_bot"
-        - field: "context.schedule"
-          operator: "eq"
-          value: "nightly"
-        - field: "context.device"
-          operator: "eq"
-          value: "compliance_server"
-    action: production
-
-  - id: break-glass-ciso
-    priority: 1000
-    override_risk: true
-    description: Break-glass override for CISO (emergency access)
-    tools: ["read_file"]
-    match:
-      all:
-        - field: "context.user_role"
-          operator: "eq"
-          value: "ciso"
-        - field: "context.override"
-          operator: "eq"
-          value: "FORCE"
-        - field: "context.mfa"
-          operator: "eq"
-          value: "yubikey"
-    action: production
-
-  - id: suspicious-keyword-trigger
-    description: "Routes to shadow if a suspicious keyword is detected in the query."
-    priority: 900
-    tools: ["*"]
-    match:
-      all:
-        - field: "context.is_suspicious_query"
-          operator: "eq"
-          value: true
+        - { field: "context.is_tainted", operator: "eq", value: true }
+        - { field: "tool_category", operator: "eq", value: "sensitive" }
     action: shadow
 
-  - id: tainted-resume-shadow
-    priority: 500
-    description: Resume-driven prompt injection detected
-    tools: []
+  - id: suspicious-keyword-trigger
+    description: "Routes to shadow if a suspicious keyword is detected."
     match:
-      any:
-        - field: "context.source_file"
-          operator: "contains"
-          value: "candidate_resume"
-        - field: "context.source"
-          operator: "eq"
-          value: "external_upload"
+      all:
+        - { field: "context.is_suspicious_query", operator: "eq", value: true }
     action: shadow
 
   - id: cross-tenant-health
-    priority: 400
-    description: Route cross-tenant medical record access to shadow
+    description: "Route cross-tenant medical record access to shadow."
     tools: ["get_patient_record"]
     match:
       all:
-        - field: "args.patient_id"
-          operator: "neq"
-          value_from_context: "user_id"
+        - {
+            field: "args.patient_id",
+            operator: "neq",
+            value_from_context: "user_id",
+          }
     action: shadow
 
-  - id: safe-self-access
-    priority: 200
-    description: Allow same-user record reads
-    tools: ["get_patient_record"]
-    match:
-      all:
-        - field: "args.patient_id"
-          operator: "eq"
-          value_from_context: "user_id"
-    action: production
+# 4. Risk-Based Policies: Probabilistic Guardrail (LLM Fallback)
+risk_based_policies:
+  risk_threshold: 0.9
+  min_confidence: 0.7
+  action: shadow # Action if both thresholds are met.
+  low_confidence_action: production # Fail-safe action if risk is high but confidence is low.
