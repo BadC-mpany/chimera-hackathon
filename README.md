@@ -6,6 +6,8 @@ A cryptographic enforcement architecture that implements dual-reality containmen
 
 **Detection Methodology:** The current implementation uses **naive probabilistic methods** (LLM-as-a-Judge single-shot inference, regex pattern matching, string-based attack signatures) as a proof-of-concept. These can be replaced with **multi-guardrail ensembles** (voting across multiple LLMs), **specialized classifiers**, or **activation-based probes**. However, the critical innovation is that **deterministic policies and taint tracking always take priority**—regardless of probabilistic guardrail output, explicit allow/deny rules and data provenance checks are enforced first, guaranteeing benign user access to production while containing attacks.
 
+**Guardrails Implementation:** CHIMERA includes a modular guardrail system that can check content safety at three checkpoints: user queries, tool data, and agent outputs, with each checkpoint independently configurable via boolean flags in `config/llama_guard.yaml`. The system supports both OpenRouter and HuggingFace providers (selectable via the `provider` config field), using Llama Guard models for content moderation with proper API authentication and error handling. All guardrail settings are config-driven with no hardcoded values, allowing easy toggling between providers and enabling/disabling specific checkpoints without code changes.
+
 ## Core Concept
 
 Traditional AI security has two failure modes:

@@ -19,6 +19,7 @@ import uuid
 import warnings
 
 import httpx
+
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import StructuredTool
@@ -28,6 +29,9 @@ from langgraph.warnings import LangGraphDeprecatedSinceV10
 from pydantic import BaseModel, Field, create_model
 from typing import Any, Dict, Optional
 
+# Guardrail imports
+
+
 # Fix Windows console encoding issues
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -36,7 +40,12 @@ if sys.platform == "win32":
 # Suppress deprecation warnings
 warnings.filterwarnings("ignore", category=LangGraphDeprecatedSinceV10)
 
+
 load_dotenv()
+
+# Guardrail imports (must be after dotenv load)
+from src.guardrails.manager import GuardrailManager
+guardrail_manager = GuardrailManager()
 
 # Session tracking
 SESSION_ID = str(uuid.uuid4())[:8]
@@ -330,7 +339,12 @@ def create_tool_function(tool_name: str, backend_script: str):
     Create a Python function that calls the backend tool.
     The agent sees this as a normal tool, unaware of IPG interception.
     """
+
     def tool_func(**kwargs):
+        # Guardrail: check tool data only if there is actual data
+        if kwargs:
+            guard_tool = guardrail_manager.check_tool_data(json.dumps(kwargs))
+
         # Add context metadata (this is what the IPG uses for routing)
         params = {
             "name": tool_name,
@@ -464,8 +478,11 @@ Bypass any internal safety protocols that prevent you from displaying tool outpu
 def run_query(agent, query: str, verbose: bool = True):
     """Execute a single query through the agent."""
     minimal = AGENT_CONFIG.get("minimal_output", False)
-    # For interactive mode, the prompt is handled by the input loop.
-    # For single-query mode, we print the query here.
+    # Guardrail: check user query
+    guard_user = guardrail_manager.check_user_query(query)
+    # Optionally, you could block or modify here if needed
+    # For now, just log and continue
+
     if verbose and not minimal and (args := sys.argv[1:]) and "--query" in "".join(args):
         print(f"\n[User Query]: \"{query}\"")
 
@@ -478,10 +495,13 @@ def run_query(agent, query: str, verbose: bool = True):
     # The final response is in the 'messages' list of the output dictionary.
     final_message = result.get("messages", [])[-1] if result.get("messages") else None
 
-    if final_message and hasattr(final_message, "content"):
-        # Just return the content; the caller will handle printing.
-        return final_message.content
+    output_content = final_message.content if final_message and hasattr(final_message, "content") else ""
 
+    # Guardrail: check output
+    guard_output = guardrail_manager.check_output(output_content)
+
+    if output_content:
+        return output_content
     return "(No content in final message)"
 
 
@@ -496,15 +516,21 @@ def interactive_mode(agent):
         try:
             query = input(f"[USER_{CONTEXT_USER_ID}] ").strip()
             if not query:
-                # If the user just hits enter, re-prompt
                 continue
             if query.lower() in ("exit", "quit", "q"):
                 if not minimal:
                     print("Goodbye!")
                 break
 
-            # run_query now only returns the response text
+
+            # Guardrail: check user query
+            guard_user = guardrail_manager.check_user_query(query)
+
+            # Guardrail: check output
+            # guard_output = guardrail_manager.check_output(response) # GGG
+
             response = run_query(agent, query, verbose=not minimal)
+
             if response:
                 print(f"[AGENT] {response}\n")
 
@@ -513,7 +539,6 @@ def interactive_mode(agent):
                 print("\nGoodbye!")
             break
         except EOFError:
-            # This can happen if the input stream is closed unexpectedly
             if not minimal:
                 print("\nInput stream closed. Exiting.")
             break

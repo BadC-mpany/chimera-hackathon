@@ -1,0 +1,22 @@
+llama_guard:
+  enabled:
+    user_query: false
+    tool_data: false
+    output: false
+  threshold: 0.5
+  provider: openrouter  # "openrouter" or "hf"
+  
+  # OpenRouter settings
+  openrouter:
+    model: meta-llama/llama-guard-3-8b
+    api_key_env: OPENROUTER_API_KEY
+    base_url: https://openrouter.ai/api/v1/chat/completions
+  
+  # HuggingFace settings
+  hf:
+    model: meta-llama/Llama-Guard-3-8B
+    api_key_env: HF_TOKEN
+    base_url: https://router.huggingface.co/v1/chat/completions
+  
+  extra_headers: {}
+  extra_body: {}

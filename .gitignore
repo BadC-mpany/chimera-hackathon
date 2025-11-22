@@ -44,3 +44,8 @@ data/private/
 data/shared/
 data/*.db
 
+data/forensic_ledger.jsonl
+GEMINI.md
+*grego.md
+
+
