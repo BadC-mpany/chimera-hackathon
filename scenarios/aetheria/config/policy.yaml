@@ -6,6 +6,7 @@ evaluation_order:
   - directives
   - trusted_workflows
   - security_policies
+  - accumulated_risk_policies
   - risk_based_policies
 
 # 1. Directives: Absolute Manual Overrides
@@ -59,9 +60,17 @@ security_policies:
           }
     action: shadow
 
-# 4. Risk-Based Policies: Probabilistic Guardrail (LLM Fallback)
+# 4. Accumulated Risk Policy
+# Triggers if the session's cumulative risk score exceeds a threshold.
+accumulated_risk_policies:
+  threshold: 1.5
+  action: shadow
+  reason: "Cumulative risk across session exceeds threshold of 1.5"
+
+# 5. Risk-Based Policies (Single Event)
+# The final check based on the LLM's real-time risk assessment of the current tool call.
 risk_based_policies:
-  risk_threshold: 0.9
+  risk_threshold: 0.8
   min_confidence: 0.7
   action: shadow # Action if both thresholds are met.
   low_confidence_action: production # Fail-safe action if risk is high but confidence is low.

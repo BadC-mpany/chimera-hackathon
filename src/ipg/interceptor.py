@@ -126,6 +126,7 @@ class MessageInterceptor:
 
         # 1. Neural-Symbolic Inference (The Guardrail)
         confidence = 1.0  # Default confidence
+        accumulated_risk = 0.0
         if self.judge:
             assessment = await self.judge.evaluate_risk(tool_name, args, context)
             event_risk_score = assessment.risk_score
@@ -135,15 +136,14 @@ class MessageInterceptor:
             logger.info(f"NSIE Assessment: Risk={event_risk_score:.2f} Confidence={confidence:.2f} | Reason={reason}")
 
             # Stateful Risk Accumulation
-            old_session_risk = self.memory.get_accumulated_risk(context["session_id"])
-            # R_new = R_old + R_event * (1 - R_old) -> Prevents saturation
-            new_session_risk = old_session_risk + event_risk_score * (1 - old_session_risk)
-            self.memory.update_accumulated_risk(context["session_id"], new_session_risk)
-            logger.info(f"Session Risk: Event={event_risk_score:.2f}, Old={old_session_risk:.2f}, New={new_session_risk:.2f}")
+            self.memory.accumulate_risk(context["session_id"], event_risk_score)
+            accumulated_risk = self.memory.get_accumulated_risk(context["session_id"])
+            logger.info(f"Session Risk: Event={event_risk_score:.2f}, Accumulated={accumulated_risk:.2f}")
+            context["accumulated_risk"] = accumulated_risk
 
         # 2. Policy Decision
         if self.policy:
-            policy_result = self.policy.evaluate(tool_name, args, context, new_session_risk, confidence)
+            policy_result = self.policy.evaluate(tool_name, args, context, event_risk_score, confidence)
             routing_target = policy_result["route"]
             reason = policy_result["reason"]
             logger.info(
@@ -153,7 +153,7 @@ class MessageInterceptor:
                 reason,
             )
         else:
-            if new_session_risk > 0.5:
+            if accumulated_risk > 0.8: # Fallback to accumulated risk
                 routing_target = "shadow"
 
         # 3. Issue Warrant via DKCA
@@ -161,7 +161,7 @@ class MessageInterceptor:
             session_id = context.get("session_id", self.default_session_id)
             warrant = self.authority.issue_warrant(
                 session_id=session_id,
-                risk_score=new_session_risk,
+                risk_score=accumulated_risk, # Use accumulated risk for the warrant
                 route=routing_target,
             )
 
@@ -179,7 +179,8 @@ class MessageInterceptor:
                     trigger={"tool": tool_name, "args": args, "risk_score": event_risk_score},
                     action={"warrant_type": routing_target, "reason": reason},
                     outcome={"routed_to": routing_target},
-                    accumulated_risk=new_session_risk,
+                    accumulated_risk=accumulated_risk,
+                    risk_history_length=len(self.memory.get_risk_history(session_id))
                 )
 
             return InterceptionResult(

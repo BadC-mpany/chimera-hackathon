@@ -20,6 +20,7 @@ class LedgerEvent:
     action: Dict[str, Any]
     outcome: Dict[str, Any]
     accumulated_risk: Optional[float]
+    risk_history_length: Optional[int]
     previous_hash: str
     hash: str = ""
 
@@ -67,6 +68,7 @@ class ImmutableForensicLedger:
         action: Dict[str, Any],
         outcome: Dict[str, Any],
         accumulated_risk: Optional[float] = None,
+        risk_history_length: Optional[int] = None,
     ) -> str:
         """
         Record an event to the immutable ledger.
@@ -83,6 +85,7 @@ class ImmutableForensicLedger:
             "action": action,
             "outcome": outcome,
             "accumulated_risk": accumulated_risk,
+            "risk_history_length": risk_history_length,
             "previous_hash": self.last_hash,
         }
 

@@ -2,6 +2,12 @@ policy:
   defaults:
     risk_threshold: 0.5
     fail_mode: shadow
+  risk_accumulation:
+    enabled: true
+    method: "windowed_sum" # additive_decay or windowed_sum
+    decay_rate: 0.1 # Only used for additive_decay
+    threshold: 2.0
+    window_minutes: 60
   rules: []
 
 overrides:

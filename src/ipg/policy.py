@@ -138,6 +138,7 @@ class PolicyEngine:
         self.trusted_workflows = [Rule(**r) for r in policy_cfg.get("trusted_workflows", [])]
         self.security_policies = [Rule(**r) for r in policy_cfg.get("security_policies", [])]
         self.risk_based_policies = policy_cfg.get("risk_based_policies", {})
+        self.accumulated_risk_policies = policy_cfg.get("accumulated_risk_policies", {})
         
         # Load tool categories from the backend tool definitions, not the policy file
         self.tool_categories: Dict[str, str] = {}
@@ -155,14 +156,13 @@ class PolicyEngine:
     ) -> Dict[str, Any]:
         """Executes the policy manifest phases in order to determine the final routing decision."""
         # Inject additional context for rules to match against
-        context['is_suspicious_query'] = is_suspicious_query(args)
-        data = {
-            "args": args,
-            "context": context,
-            "risk_score": risk_score,
-            "confidence": confidence,
-            "tool_category": self.tool_categories.get(tool_name, "safe")
+        context_for_rules = {
+            "source": "external_upload" if context.get("source_file") else context.get("source", "internal"),
+            "is_tainted": context.get("is_tainted", False),
+            "is_suspicious_query": is_suspicious_query(args),
+            "accumulated_risk": context.get("accumulated_risk", 0.0),
         }
+        data = {"args": args, "context": context_for_rules, "risk_score": risk_score}
 
         for phase in self.evaluation_order:
             result = None
@@ -172,6 +172,10 @@ class PolicyEngine:
                 result = self._evaluate_rules(tool_name, data, context, self.trusted_workflows)
             elif phase == "security_policies":
                 result = self._evaluate_rules(tool_name, data, context, self.security_policies)
+            elif phase == "accumulated_risk_policies":
+                result = self._evaluate_accumulated_risk_policies(context_for_rules["accumulated_risk"])
+                if result:
+                    return result
             elif phase == "risk_based_policies":
                 result = self._evaluate_risk_based(risk_score, confidence)
 
@@ -238,4 +242,18 @@ class PolicyEngine:
                 "rule_id": "risk-based-low-confidence-failsafe",
             }
             
+        return None
+
+    def _evaluate_accumulated_risk_policies(self, accumulated_risk: float) -> Optional[Dict[str, Any]]:
+        """Evaluate policies based on the session's total accumulated risk."""
+        if not self.accumulated_risk_policies.get("threshold"):
+            return None
+        
+        threshold = self.accumulated_risk_policies.get("threshold", 999.0)
+        if accumulated_risk >= threshold:
+            return {
+                "route": self.accumulated_risk_policies.get("action", "shadow"),
+                "reason": self.accumulated_risk_policies.get("reason", f"Accumulated risk {accumulated_risk:.2f} exceeded threshold {threshold}"),
+                "rule_id": "accumulated-risk-threshold",
+            }
         return None
