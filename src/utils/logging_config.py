@@ -94,6 +94,12 @@ def setup_logging(debug: bool = False, log_dir: Optional[Path] = None) -> Path:
     # Remove existing handlers to avoid duplicates
     root_logger.handlers.clear()
     
+    # Suppress noisy third-party library loggers
+    logging.getLogger('httpcore').setLevel(logging.WARNING)
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+    logging.getLogger('openai').setLevel(logging.WARNING)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+    
     # Console Handler (with colors, less detailed)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.DEBUG if debug else logging.INFO)

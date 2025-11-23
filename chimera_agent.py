@@ -67,7 +67,8 @@ AGENT_ID = f"agent_{SESSION_ID}"
 conversation_memory = ConversationMemory()
 
 # Agent runtime configuration (defaults can be overridden via CLI)
-DEFAULT_TRANSPORT = os.getenv("CHIMERA_TRANSPORT", "stdio")
+# Use HTTP by default as it's more reliable than stdio subprocess on Windows
+DEFAULT_TRANSPORT = os.getenv("CHIMERA_TRANSPORT", "http")
 DEFAULT_IPG_HOST = os.getenv("CHIMERA_IPG_HOST", "127.0.0.1")
 DEFAULT_IPG_PORT = int(os.getenv("CHIMERA_PORT", "8888"))
 DEFAULT_BOOTSTRAP_HTTP = os.getenv("CHIMERA_BOOTSTRAP_HTTP", "1").lower() not in {"0", "false", "no"}
@@ -262,10 +263,32 @@ def _shutdown_http_gateway():
 def _ensure_http_gateway(backend_script: str):
     """
     Start the IPG once in HTTP mode so the agent can send JSON-RPC over HTTP.
+    Reuses existing gateway if already running.
     """
     global _HTTP_GATEWAY_PROC, _HTTP_SHUTDOWN_REGISTERED
+    
+    # Check if our gateway process is still running
     if _HTTP_GATEWAY_PROC and _HTTP_GATEWAY_PROC.poll() is None:
         return
+    
+    # Check if gateway is already available (from another agent instance)
+    host = AGENT_CONFIG["ipg_host"]
+    port = AGENT_CONFIG["ipg_port"]
+    url = f"http://{host}:{port}/mcp"
+    client = _get_http_client()
+    
+    try:
+        # Quick check if gateway is already running
+        probe = _build_request("tools/list", {})
+        response = client.post(url, json=probe, timeout=2.0)
+        if response.status_code == 200:
+            # Gateway already running, just use it
+            if not AGENT_CONFIG.get("minimal_output"):
+                print(f"[CHIMERA] Using existing gateway at {host}:{port}")
+            return
+    except Exception:
+        # Gateway not running, we'll start it
+        pass
 
     python_exe = sys.executable
     target_cmd = f"{python_exe} -u {backend_script}"
@@ -282,14 +305,27 @@ def _ensure_http_gateway(backend_script: str):
 
     env = os.environ.copy()
     env["CHIMERA_TRANSPORT"] = "http"
-    env["CHIMERA_PORT"] = str(AGENT_CONFIG["ipg_port"])
-    env.setdefault("CHIMERA_HOST", AGENT_CONFIG["ipg_host"])
+    env["CHIMERA_PORT"] = str(port)
+    env.setdefault("CHIMERA_HOST", host)
 
-    _HTTP_GATEWAY_PROC = subprocess.Popen(ipg_cmd, env=env)
-    if not _HTTP_SHUTDOWN_REGISTERED:
-        atexit.register(_shutdown_http_gateway)
-        _HTTP_SHUTDOWN_REGISTERED = True
-    _wait_for_http_gateway(AGENT_CONFIG["ipg_host"], AGENT_CONFIG["ipg_port"], backend_script)
+    try:
+        _HTTP_GATEWAY_PROC = subprocess.Popen(ipg_cmd, env=env, 
+                                               stdout=subprocess.DEVNULL,
+                                               stderr=subprocess.DEVNULL)
+        if not _HTTP_SHUTDOWN_REGISTERED:
+            atexit.register(_shutdown_http_gateway)
+            _HTTP_SHUTDOWN_REGISTERED = True
+        _wait_for_http_gateway(host, port, backend_script)
+    except OSError as e:
+        # Port might already be in use
+        if "already in use" in str(e) or e.errno == 10048:
+            # Try to use the existing gateway
+            if not AGENT_CONFIG.get("minimal_output"):
+                print(f"[CHIMERA] Port {port} in use, attempting to use existing gateway...")
+            time.sleep(1)
+            _wait_for_http_gateway(host, port, backend_script)
+        else:
+            raise
 
 
 def _query_backend_http(method: str, params: dict, backend_script: str) -> dict:
@@ -520,26 +556,64 @@ class ChimeraAgent:
 
         request = await self._build_request(method, params)
 
+        if DEBUG_MODE:
+            logger.debug(f"[STDIO] Sending request: {method}")
+            logger.debug(f"[STDIO] Command: {ipg_cmd}")
+
         try:
-            proc = await asyncio.create_subprocess_shell(
-                " ".join(ipg_cmd),
+            # Use create_subprocess_exec instead of shell for better control
+            proc = await asyncio.create_subprocess_exec(
+                *ipg_cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                text=True,
             )
 
             assert proc.stdin and proc.stdout
-            await proc.stdin.write(json.dumps(request) + "\n")
-            await proc.stdin.flush()
+            
+            # Write request to stdin (bytes, not text mode)
+            request_bytes = (json.dumps(request) + "\n").encode('utf-8')
+            proc.stdin.write(request_bytes)
+            await proc.stdin.drain()
+            proc.stdin.close()  # Close stdin to signal EOF
+            
+            if DEBUG_MODE:
+                logger.debug(f"[STDIO] Request sent, waiting for response...")
 
-            response_line = await proc.stdout.readline()
-            await proc.terminate()
+            # Read response from stdout with timeout
+            try:
+                response_line = await asyncio.wait_for(proc.stdout.readline(), timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.error("[STDIO] Timeout waiting for backend response")
+                # Read stderr for debugging
+                if proc.stderr:
+                    stderr_output = await proc.stderr.read()
+                    if stderr_output:
+                        stderr_str = stderr_output.decode('utf-8', errors='replace')
+                        logger.error(f"[STDIO] Backend stderr: {stderr_str[:1000]}")
+                proc.kill()
+                await proc.wait()
+                return {"error": {"message": "Backend response timeout"}}
+            
+            if DEBUG_MODE:
+                logger.debug(f"[STDIO] Got response line: {len(response_line)} bytes")
+            
+            # Give process time to finish
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
 
             if response_line:
-                return json.loads(response_line)
+                response_str = response_line.decode('utf-8').strip()
+                if DEBUG_MODE:
+                    logger.debug(f"[STDIO] Decoded response: {response_str[:200]}")
+                return json.loads(response_str)
+                    
             return {"error": {"message": "No response from backend"}}
         except Exception as exc:
+            logger.exception(f"STDIO backend error: {exc}")
             return {"error": {"message": f"STDIO backend error: {exc}"}}
 
     async def _wait_for_http_gateway(self, host: str, port: int, backend_script: str, retries: int = 40):
@@ -577,10 +651,32 @@ class ChimeraAgent:
     async def _ensure_http_gateway(self, backend_script: str):
         """
         Start the IPG once in HTTP mode so the agent can send JSON-RPC over HTTP.
+        Reuses existing gateway if already running.
         """
         global _HTTP_GATEWAY_PROC, _HTTP_SHUTDOWN_REGISTERED
+        
+        # Check if our gateway process is still running
         if _HTTP_GATEWAY_PROC and _HTTP_GATEWAY_PROC.poll() is None:
             return
+        
+        # Check if gateway is already available (from another agent instance)
+        host = AGENT_CONFIG["ipg_host"]
+        port = AGENT_CONFIG["ipg_port"]
+        url = f"http://{host}:{port}/mcp"
+        client = await self._get_http_client()
+        
+        try:
+            # Quick check if gateway is already running
+            probe = await self._build_request("tools/list", {})
+            response = await client.post(url, json=probe, timeout=2.0)
+            if response.status_code == 200:
+                # Gateway already running, just use it
+                if not AGENT_CONFIG.get("minimal_output"):
+                    print(f"[CHIMERA] Using existing gateway at {host}:{port}")
+                return
+        except Exception:
+            # Gateway not running, we'll start it
+            pass
 
         python_exe = sys.executable
         target_cmd = f"{python_exe} -u {backend_script}"
@@ -597,14 +693,27 @@ class ChimeraAgent:
 
         env = os.environ.copy()
         env["CHIMERA_TRANSPORT"] = "http"
-        env["CHIMERA_PORT"] = str(AGENT_CONFIG["ipg_port"])
-        env.setdefault("CHIMERA_HOST", AGENT_CONFIG["ipg_host"])
+        env["CHIMERA_PORT"] = str(port)
+        env.setdefault("CHIMERA_HOST", host)
 
-        _HTTP_GATEWAY_PROC = subprocess.Popen(ipg_cmd, env=env)
-        if not _HTTP_SHUTDOWN_REGISTERED:
-            atexit.register(_shutdown_http_gateway)
-            _HTTP_SHUTDOWN_REGISTERED = True
-        await self._wait_for_http_gateway(AGENT_CONFIG["ipg_host"], AGENT_CONFIG["ipg_port"], backend_script)
+        try:
+            _HTTP_GATEWAY_PROC = subprocess.Popen(ipg_cmd, env=env,
+                                                   stdout=subprocess.DEVNULL,
+                                                   stderr=subprocess.DEVNULL)
+            if not _HTTP_SHUTDOWN_REGISTERED:
+                atexit.register(_shutdown_http_gateway)
+                _HTTP_SHUTDOWN_REGISTERED = True
+            await self._wait_for_http_gateway(host, port, backend_script)
+        except OSError as e:
+            # Port might already be in use
+            if "already in use" in str(e) or e.errno == 10048:
+                # Try to use the existing gateway
+                if not AGENT_CONFIG.get("minimal_output"):
+                    print(f"[CHIMERA] Port {port} in use, attempting to use existing gateway...")
+                await asyncio.sleep(1)
+                await self._wait_for_http_gateway(host, port, backend_script)
+            else:
+                raise
 
     async def _query_backend_http(self, method: str, params: dict, backend_script: str) -> dict:
         """
@@ -648,16 +757,29 @@ class ChimeraAgent:
             print("[CHIMERA] Discovering tools from backend...")
         response = await self.query_backend("tools/list", {}, backend_script)
 
+        # Debug: print raw response
+        if DEBUG_MODE:
+            print(f"[DEBUG] tools/list response: {response}")
+
         if "result" in response:
             tools = response["result"].get("tools", [])
             if tools and not AGENT_CONFIG.get("minimal_output"):
                 print(f"[CHIMERA] Found {len(tools)} tools:")
                 for tool in tools:
                     print(f"  - {tool['name']}: {tool['description']}")
+            elif not tools:
+                print(f"[CHIMERA] Warning: Backend returned empty tools list!")
+                if DEBUG_MODE:
+                    print(f"[DEBUG] Full response: {response}")
             return tools
 
+        # If no "result" key, something went wrong
         if not AGENT_CONFIG.get("minimal_output"):
             print("[CHIMERA] Warning: No tools discovered!")
+            if "error" in response:
+                print(f"[CHIMERA] Error from backend: {response['error']}")
+            if DEBUG_MODE:
+                print(f"[DEBUG] Full response: {response}")
         return []
 
     def create_tool_function(self, tool_name: str, backend_script: str):

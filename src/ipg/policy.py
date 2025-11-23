@@ -169,7 +169,16 @@ class PolicyEngine:
             "is_suspicious_query": is_suspicious_query(args),
             "accumulated_risk": context.get("accumulated_risk", 0.0),
         }
-        data = {"args": args, "context": context_for_rules, "risk_score": risk_score}
+        
+        # CRITICAL FIX: Add tool_category to data so taint-permission-block rule can match
+        tool_category = self.tool_categories.get(tool_name, "safe")
+        
+        data = {
+            "args": args, 
+            "context": context_for_rules, 
+            "risk_score": risk_score,
+            "tool_category": tool_category  # Add tool_category for security policy matching
+        }
         
         if self.debug:
             logger.debug(f"Policy evaluation starting for tool: {tool_name}")
