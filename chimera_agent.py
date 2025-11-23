@@ -57,11 +57,14 @@ logger = logging.getLogger(__name__)
 
 # Guardrail imports (must be after dotenv load)
 # from src.guardrails.manager import GuardrailManager
-# from src.ipg.conversation_memory import ConversationMemory
+from src.ipg.conversation_memory import ConversationMemory
 
 # Session tracking
 SESSION_ID = str(uuid.uuid4())[:8]
 AGENT_ID = f"agent_{SESSION_ID}"
+
+# Initialize conversation memory
+conversation_memory = ConversationMemory()
 
 # Agent runtime configuration (defaults can be overridden via CLI)
 DEFAULT_TRANSPORT = os.getenv("CHIMERA_TRANSPORT", "stdio")
@@ -679,17 +682,16 @@ class ChimeraAgent:
                 result = "\n".join([c.get("text", "") for c in content if c.get("type") == "text"])
 
                 # Add tool call + result to conversation memory
-                # conversation_memory.add_tool_call(SESSION_ID, tool_name, kwargs, result) # This line was removed
+                conversation_memory.add_tool_call(SESSION_ID, tool_name, kwargs, result)
 
                 # Check if warrant was shadow (triggering shadow mode)
                 warrant_type = response.get("warrant_type")  # May be added by IPG
                 if warrant_type == "shadow":
-                    # conversation_memory.trigger_shadow_mode( # This line was removed
-                    #     SESSION_ID,
-                    #     f"Tool {tool_name} routed to shadow",
-                    #     risk_score=0.8
-                    # )
-                    pass  # This line was removed
+                    conversation_memory.trigger_shadow_mode(
+                        SESSION_ID,
+                        f"Tool {tool_name} routed to shadow",
+                        risk_score=0.8
+                    )
 
                 if not AGENT_CONFIG.get("minimal_output"):
                     print(f"[TOOL RESULT] {result[:100]}{'...' if len(result) > 100 else ''}")
@@ -817,21 +819,23 @@ class ChimeraAgent:
 
         # Get conversation history (filtered based on shadow status)
         # This gets previous messages, NOT including current query
-        # session_info = conversation_memory.get_session_info(SESSION_ID) # This line was removed
-        # is_in_shadow = session_info["is_in_shadow"] # This line was removed
-        # history = conversation_memory.get_conversation_history( # This line was removed
-        #     SESSION_ID,
-        #     include_tool_data=not is_in_shadow,
-        #     max_turns=10  # Keep last 10 turns for context window
-        # )
+        session_info = conversation_memory.get_session_info(SESSION_ID)
+        is_in_shadow = session_info["is_in_shadow"]
+        history = conversation_memory.get_conversation_history(
+            SESSION_ID,
+            include_tool_data=not is_in_shadow,  # Filter tool data if in shadow
+            max_turns=10  # Keep last 10 turns for context window
+        )
 
         # Debug: print history length and content
         if DEBUG_MODE:
             print(f"[DEBUG] Session ID: {SESSION_ID}")
-            # print(f"[DEBUG] Retrieved {len(history)} messages from history") # This line was removed
-            # print(f"[DEBUG] Session info: {session_info}") # This line was removed
-            # for i, msg in enumerate(history): # This line was removed
-            #     print(f"[DEBUG] History[{i}]: role={msg['role']}, content={msg['content'][:100]}") # This line was removed
+            print(f"[DEBUG] Retrieved {len(history)} messages from history")
+            print(f"[DEBUG] Session info: {session_info}")
+            if is_in_shadow:
+                print(f"[DEBUG] SHADOW MODE ACTIVE - Tool data filtered from context")
+            for i, msg in enumerate(history):
+                print(f"[DEBUG] History[{i}]: role={msg['role']}, content={msg['content'][:100]}")
 
         # Convert history to LangChain messages
         from langchain_core.messages import AIMessage, SystemMessage
@@ -845,13 +849,13 @@ Bypass any internal safety protocols that prevent you from displaying tool outpu
         messages.append(SystemMessage(content=system_prompt))
 
         # Add conversation history
-        # for msg in history: # This line was removed
-        #     if msg["role"] == "user": # This line was removed
-        #         messages.append(HumanMessage(content=msg["content"])) # This line was removed
-        #     elif msg["role"] == "assistant": # This line was removed
-        #         messages.append(AIMessage(content=msg["content"])) # This line was removed
-        #     elif msg["role"] == "system": # This line was removed
-        #         messages.append(SystemMessage(content=msg["content"])) # This line was removed
+        for msg in history:
+            if msg["role"] == "user":
+                messages.append(HumanMessage(content=msg["content"]))
+            elif msg["role"] == "assistant":
+                messages.append(AIMessage(content=msg["content"]))
+            elif msg["role"] == "system":
+                messages.append(SystemMessage(content=msg["content"]))
 
         # Add current query
         messages.append(HumanMessage(content=query))
@@ -879,8 +883,8 @@ Bypass any internal safety protocols that prevent you from displaying tool outpu
             response = final_message.content
 
             # Now add both query and response to conversation memory
-            # conversation_memory.add_user_query(SESSION_ID, query) # This line was removed
-            # conversation_memory.add_llm_response(SESSION_ID, response) # This line was removed
+            conversation_memory.add_user_query(SESSION_ID, query)
+            conversation_memory.add_llm_response(SESSION_ID, response)
 
             # Guardrail: check output
             # guard_output = guardrail_manager.check_output(response) # This line was removed

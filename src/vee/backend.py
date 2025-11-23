@@ -96,7 +96,19 @@ class ChimeraBackend:
             tool_name = params.get("name")
             args = params.get("arguments", {}) or {}
             content = self._call_tool(environment, tool_name, args)
-            response["result"] = {"content": [{"type": "text", "text": content}]}
+            
+            # Add warrant_type to response for agent's conversation memory
+            result = {
+                "content": [{"type": "text", "text": content}]
+            }
+            
+            # Inject warrant_type so agent knows if it's in shadow
+            if environment == "HONEYPOT":
+                result["warrant_type"] = "shadow"
+            elif environment == "PRODUCTION":
+                result["warrant_type"] = "prime"
+            
+            response["result"] = result
             return response
 
         response["result"] = {"status": "ok"}
