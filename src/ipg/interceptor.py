@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Import logging utilities for enhanced debugging
 try:
-    from src.utils.logging_config import log_dict, log_separator
+    from src.utils.logging_config import log_dict, log_separator, log_dashboard_event
 except ImportError:
     # Fallback if logging utilities not available
     def log_dict(logger, title, data, level="DEBUG"):
@@ -237,6 +237,26 @@ class MessageInterceptor:
             routing_target = policy_result["route"]
             reason = policy_result["reason"]
             
+            # Log the comprehensive event for the dashboard
+            log_dashboard_event(
+                message=f"Tool call '{tool_name}' intercepted and routed to {routing_target}.",
+                data={
+                    "event_type": "tool_interception",
+                    "session_id": context.get("session_id"),
+                    "user_id": context.get("user_id"),
+                    "user_role": context.get("user_role"),
+                    "tool_name": tool_name,
+                    "tool_args": args,
+                    "nsie_risk_score": event_risk_score,
+                    "nsie_reason": assessment.reason if 'assessment' in locals() else "N/A",
+                    "accumulated_risk": accumulated_risk,
+                    "policy_rule_id": policy_result.get("rule_id"),
+                    "policy_reason": reason,
+                    "final_route": routing_target,
+                    "is_tainted": context.get("is_tainted", False),
+                }
+            )
+
             logger.info(
                 "Policy decision: route=%s rule=%s reason=%s",
                 routing_target,

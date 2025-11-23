@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import shlex
 import sys
 from typing import Dict, Optional, Union, Any
 from .transport import StdioTransport, HttpTransport
@@ -36,91 +37,104 @@ class Gateway:
         self.downstream_proc: Optional[asyncio.subprocess.Process] = None
 
     async def start(self):
-        """Starts the gateway loop."""
+        """Starts the gateway and the two forwarding tasks."""
         logger.info(f"Starting IPG (Transport: {self.transport_mode}) with downstream target: {self.downstream_command}")
 
-        # 1. Start Upstream (Stdin/Stdout or HTTP Server)
         await self.upstream.start()
 
-        # 2. Start Downstream (Subprocess)
-        # using shell=True for flexibility in the MVP command string, but exec is better for security usually
-        self.downstream_proc = await asyncio.create_subprocess_shell(
-            self.downstream_command,
+        # Use create_subprocess_exec for efficiency and security
+        # shlex.split is essential for correctly parsing the command string
+        cmd_parts = shlex.split(self.downstream_command)
+        
+        # Ensure the first part of the command is the python executable if it's a python script
+        if cmd_parts[0] == 'python' and '.py' in self.downstream_command:
+            cmd_parts[0] = sys.executable
+
+        self.downstream_proc = await asyncio.create_subprocess_exec(
+            *cmd_parts,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=sys.stderr  # Passthrough stderr for now
+            stderr=sys.stderr  # Passthrough stderr for debugging
         )
 
         if not self.downstream_proc.stdin or not self.downstream_proc.stdout:
             raise RuntimeError("Failed to connect pipes to downstream process")
 
-        # 3. Run loops
         try:
+            # Run the two forwarding tasks concurrently
             await asyncio.gather(
-                self._upstream_to_downstream(),
-                self._downstream_to_upstream()
+                self._forward_upstream_to_downstream(),
+                self._forward_downstream_to_upstream()
             )
         except Exception as e:
             logger.error(f"Gateway error: {e}")
         finally:
             await self.stop()
 
-    async def _upstream_to_downstream(self):
-        """Reads from Agent (stdin/http), Intercepts, writes to Tool (subprocess)."""
+    async def _forward_upstream_to_downstream(self):
+        """Task to read from agent, intercept, and forward to the tool's stdin."""
+        if not self.downstream_proc or not self.downstream_proc.stdin:
+            return
+
         try:
             async for message in self.upstream.read_messages():
-                # Intercept & Inspect
                 processed_msg, routing_target = await self.interceptor.process_message(message)
 
-                # Handle DENIAL - return error directly to agent without forwarding to backend
                 if routing_target == "denied":
                     logger.warning(f"[ACCESS DENIED] Request blocked by policy")
                     await self.upstream.write_message(processed_msg)
                     continue
-
+                
                 if routing_target == "shadow":
-                    logger.warning(f"[ROUTING] Message routed to SHADOW environment: {message[:50]}...")
+                    logger.warning(f"[ROUTING] Message routed to SHADOW environment.")
 
-                # Forward to downstream
-                if self.downstream_proc and self.downstream_proc.stdin:
-                    logger.info("Gateway: Writing to downstream...")
-                    input_data = processed_msg.strip() + "\n"
-                    self.downstream_proc.stdin.write(input_data.encode('utf-8'))
-                    await self.downstream_proc.stdin.drain()
-                    logger.info("Gateway: Wrote to downstream")
+                input_data = processed_msg.strip() + "\n"
+                self.downstream_proc.stdin.write(input_data.encode('utf-8'))
+                await self.downstream_proc.stdin.drain()
+
+        except asyncio.CancelledError:
+            logger.info("Upstream forwarding task cancelled.")
         except Exception as e:
-            logger.error(f"Upstream -> Downstream error: {e}")
+            logger.error(f"Upstream -> Downstream forwarder error: {e}", exc_info=True)
+        finally:
+            # Close downstream stdin to signal no more data will be sent
+            if self.downstream_proc.stdin:
+                self.downstream_proc.stdin.close()
+                await self.downstream_proc.stdin.wait_closed()
 
-    async def _downstream_to_upstream(self):
-        """Reads from Tool (subprocess), writes to Agent (stdout/http response)."""
+    async def _forward_downstream_to_upstream(self):
+        """Task to read from the tool's stdout, sanitize, and forward to the agent."""
+        if not self.downstream_proc or not self.downstream_proc.stdout:
+            return
+
         try:
-            if not self.downstream_proc or not self.downstream_proc.stdout:
-                return
-
-            logger.info("Gateway: Starting downstream listener...")
-            while True:
+            # This loop correctly waits for data and exits when the stream is closed.
+            while not self.downstream_proc.stdout.at_eof():
                 line = await self.downstream_proc.stdout.readline()
                 if not line:
-                    logger.info("Gateway: Downstream EOF")
                     break
-
-                logger.info(f"Gateway: Read from downstream: {line[:20]}...")
 
                 msg = line.decode('utf-8').strip()
                 if msg:
-                    # Sanitize response before sending back to agent
                     clean_msg = self.sanitizer.sanitize(msg)
                     await self.upstream.write_message(clean_msg)
-                    logger.info("Gateway: Forwarded sanitized message to upstream")
+
+        except asyncio.CancelledError:
+            logger.info("Downstream forwarding task cancelled.")
         except Exception as e:
-            logger.error(f"Downstream -> Upstream error: {e}")
+            logger.error(f"Downstream -> Upstream forwarder error: {e}", exc_info=True)
 
     async def stop(self):
-        """Cleanup."""
+        """Gracefully stop the gateway and its subprocess."""
         await self.upstream.close()
-        if self.downstream_proc:
+        if self.downstream_proc and self.downstream_proc.returncode is None:
+            logger.info("Terminating downstream process...")
             try:
                 self.downstream_proc.terminate()
-                await self.downstream_proc.wait()
-            except Exception:
-                pass
+                await asyncio.wait_for(self.downstream_proc.wait(), timeout=5.0)
+                logger.info("Downstream process terminated.")
+            except asyncio.TimeoutError:
+                logger.warning("Downstream process did not terminate gracefully, killing.")
+                self.downstream_proc.kill()
+            except Exception as e:
+                logger.error(f"Error stopping downstream process: {e}")

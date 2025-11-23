@@ -21,10 +21,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger("chimera.backend.server")
 
-backend = ChimeraBackend()
+logger.info("CHIMERA Backend Server script started.")
+
+try:
+    backend = ChimeraBackend()
+    logger.info("ChimeraBackend initialized successfully.")
+except Exception as e:
+    logger.exception("FATAL: Failed to initialize ChimeraBackend.")
+    backend = None
 
 
 def handle_json_line(line: str) -> Dict[str, Any]:
+    if not backend:
+        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32000, "message": "Backend not initialized."}}
     try:
         request = json.loads(line)
     except json.JSONDecodeError:
@@ -60,8 +69,14 @@ if FastAPI:
         version="0.1.0",
     )
 
+    @app.on_event("startup")
+    async def startup_event():
+        logger.info("FastAPI app startup complete. Ready to serve requests.")
+
     @app.post("/mcp")
     async def mcp_bridge(payload: MCPRequest):
+        if not backend:
+            raise HTTPException(status_code=503, detail="Backend not available.")
         try:
             response = backend.handle_request(payload.dict())
             return response
@@ -91,8 +106,12 @@ if __name__ == "__main__":
         if app is None:
             logger.error("FastAPI not installed. Install fastapi+uvicorn to run HTTP mode.")
             sys.exit(1)
+        if backend is None:
+            logger.error("Cannot start server because ChimeraBackend failed to initialize.")
+            sys.exit(1)
         import uvicorn
 
+        logger.info(f"Starting Uvicorn server on {args.host}:{args.port}")
         uvicorn.run("chimera_server:app", host=args.host, port=args.port, log_level="info")
     else:
         run_stdio_server()

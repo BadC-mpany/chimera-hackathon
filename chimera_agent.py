@@ -51,7 +51,7 @@ DEBUG_MODE = _settings.get("agent", {}).get("debug", False)
 
 # Initialize logging system BEFORE any other imports that might log
 from src.utils.logging_config import setup_logging
-LOG_FILE = setup_logging(debug=DEBUG_MODE)
+LOG_FILE = None # Will be set if logging is enabled
 
 logger = logging.getLogger(__name__)
 
@@ -1003,6 +1003,11 @@ Environment:
         help="Only emit [USER_*] and [AGENT] lines (ideal for clean demos)",
     )
     parser.add_argument(
+        "--logging",
+        action="store_true",
+        help="Enable detailed file and console logging for the agent session.",
+    )
+    parser.add_argument(
         "--interactive-auth",
         "--choose-user",
         action="store_true",
@@ -1011,6 +1016,14 @@ Environment:
     )
 
     args = parser.parse_args()
+
+    # Conditionally enable logging
+    if args.logging:
+        global LOG_FILE
+        LOG_FILE = setup_logging(debug=args.verbose)
+    else:
+        # If logging is not enabled, add a NullHandler to prevent "no handlers" warnings
+        logging.getLogger().addHandler(logging.NullHandler())
 
     # Validate scenario is set
     scenario = os.getenv("CHIMERA_SCENARIO")
@@ -1022,11 +1035,12 @@ Environment:
         )
         sys.exit(1)
     
-    # Log session start
-    logger.info(f"Starting CHIMERA Agent - Scenario: {scenario}")
-    logger.info(f"Session ID: {SESSION_ID}")
-    logger.info(f"Log file: {LOG_FILE}")
-    logger.info(f"Debug mode: {DEBUG_MODE}")
+    # Log session start if logging is enabled
+    if args.logging:
+        logger.info(f"Starting CHIMERA Agent - Scenario: {scenario}")
+        logger.info(f"Session ID: {SESSION_ID}")
+        logger.info(f"Log file: {LOG_FILE}")
+        logger.info(f"Debug mode: {DEBUG_MODE}")
 
     # Prepare config for the agent class
     config = {

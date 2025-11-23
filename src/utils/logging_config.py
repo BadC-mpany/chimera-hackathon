@@ -4,11 +4,29 @@ Provides structured logging to both console and timestamped log files.
 """
 import logging
 import sys
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from src.config import load_settings
+
+
+class JsonFormatter(logging.Formatter):
+    """Formats log records as JSON strings."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_object = {
+            "timestamp": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "message": record.getMessage(),
+            "source": record.name,
+        }
+        # If the log call includes extra data, add it to the JSON object.
+        if hasattr(record, "extra_data") and isinstance(record.extra_data, dict):
+            log_object.update(record.extra_data)
+
+        return json.dumps(log_object)
 
 
 class ChimeraFormatter(logging.Formatter):
@@ -87,6 +105,19 @@ def setup_logging(debug: bool = False, log_dir: Optional[Path] = None) -> Path:
     file_handler.setLevel(logging.DEBUG)  # Always DEBUG for file
     file_handler.setFormatter(ChimeraFormatter(use_colors=False, detailed=True))
     root_logger.addHandler(file_handler)
+
+    # Dashboard JSONL Handler (structured logs for dashboards)
+    dashboard_log_file = log_dir.parent / "data" / "dashboard_events.jsonl"
+    dashboard_log_file.parent.mkdir(exist_ok=True)
+    dashboard_handler = logging.FileHandler(dashboard_log_file, encoding='utf-8')
+    dashboard_handler.setLevel(logging.INFO)
+    dashboard_handler.setFormatter(JsonFormatter())
+    
+    # Create a dedicated logger for dashboard events
+    dashboard_logger = logging.getLogger("dashboard")
+    dashboard_logger.setLevel(logging.INFO)
+    dashboard_logger.propagate = False # Do not forward to root logger
+    dashboard_logger.addHandler(dashboard_handler)
     
     # Log startup message
     logger = logging.getLogger(__name__)
@@ -94,10 +125,23 @@ def setup_logging(debug: bool = False, log_dir: Optional[Path] = None) -> Path:
     logger.info(f"CHIMERA Logging Initialized")
     logger.info(f"Debug Mode: {debug}")
     logger.info(f"Log File: {log_file}")
+    logger.info(f"Dashboard Log: {dashboard_log_file}")
     logger.info(f"Timestamp: {timestamp}")
     logger.info("="*80)
     
     return log_file
+
+
+def log_dashboard_event(message: str, data: dict):
+    """
+    Logs a structured event to the dashboard logger.
+
+    Args:
+        message: A human-readable log message.
+        data: A dictionary of structured data to include in the log.
+    """
+    dashboard_logger = logging.getLogger("dashboard")
+    dashboard_logger.info(message, extra={'extra_data': data})
 
 
 def log_separator(logger: logging.Logger, message: str = "", level: str = "INFO"):
