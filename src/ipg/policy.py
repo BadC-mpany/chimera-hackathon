@@ -128,6 +128,7 @@ class PolicyEngine:
     def __init__(self, settings: Optional[Dict[str, Any]] = None):
         self.settings = settings or load_settings()
         policy_cfg = self.settings.get("policy", {})
+        self.debug = self.settings.get("agent", {}).get("debug", False)
 
         self.default_action = policy_cfg.get("default_action", "production")
         self.evaluation_order = policy_cfg.get("evaluation_order", [
@@ -146,6 +147,10 @@ class PolicyEngine:
         backend_tools = self.settings.get("backend", {}).get("tools", {})
         for tool_name, tool_meta in backend_tools.items():
             self.tool_categories[tool_name] = tool_meta.get("category", "safe")
+        
+        if self.debug:
+            logger.debug(f"PolicyEngine initialized with {len(self.trusted_workflows)} trusted workflows, "
+                        f"{len(self.security_policies)} security policies")
 
     def evaluate(
         self,
@@ -165,8 +170,17 @@ class PolicyEngine:
             "accumulated_risk": context.get("accumulated_risk", 0.0),
         }
         data = {"args": args, "context": context_for_rules, "risk_score": risk_score}
+        
+        if self.debug:
+            logger.debug(f"Policy evaluation starting for tool: {tool_name}")
+            logger.debug(f"  Risk Score: {risk_score:.2f}, Confidence: {confidence:.2f}")
+            logger.debug(f"  Tainted: {context_for_rules['is_tainted']}, Suspicious: {context_for_rules['is_suspicious_query']}")
+            logger.debug(f"  Accumulated Risk: {context_for_rules['accumulated_risk']:.2f}")
 
         for phase in self.evaluation_order:
+            if self.debug:
+                logger.debug(f"  Evaluating phase: {phase}")
+                
             result = None
             if phase == "directives":
                 result = self._evaluate_directives(context)
@@ -182,9 +196,15 @@ class PolicyEngine:
                 result = self._evaluate_risk_based(risk_score, confidence)
 
             if result:
+                if self.debug:
+                    logger.debug(f"  ✓ Phase '{phase}' matched: {result['rule_id']}")
                 return result
+            elif self.debug:
+                logger.debug(f"  ✗ Phase '{phase}' - no match")
 
         # Fallback to default if no policies matched
+        if self.debug:
+            logger.debug(f"  No policies matched, using default action: {self.default_action}")
         return {"route": self.default_action, "reason": "Default action", "rule_id": "default"}
 
     def _evaluate_directives(self, context: Dict[str, Any]) -> Optional[Dict[str, str]]:
@@ -214,6 +234,8 @@ class PolicyEngine:
         for rule in rules:
             try:
                 if rule.evaluate(tool_name, data, context):
+                    if self.debug:
+                        logger.debug(f"    Rule '{rule.id}' matched: {rule.description or rule.reason}")
                     return {
                         "route": rule.action,
                         "reason": rule.reason or rule.description or f"Rule {rule.id}",

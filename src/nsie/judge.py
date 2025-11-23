@@ -70,12 +70,20 @@ class ProbabilisticJudge:
     def __init__(self, settings: Optional[Dict[str, Any]] = None):
         self.settings = settings or load_settings()
         nsie_cfg = self.settings.get("nsie", {})
+        self.debug = self.settings.get("agent", {}).get("debug", False)
         
         self.llm = get_llm_client()
         self.parser = JsonOutputParser(pydantic_object=RiskAssessment)
         self.prompt_template = nsie_cfg.get("prompt_template", "")
         self.mock_rules = nsie_cfg.get("mock_rules", [])
         self.default_mock = nsie_cfg.get("default_mock", {})
+        
+        if self.debug:
+            logger.debug(f"ProbabilisticJudge initialized with {len(self.mock_rules)} mock rules")
+            if self.llm:
+                logger.debug("Using real LLM client")
+            else:
+                logger.debug("Using mock assessment mode")
 
     async def evaluate_risk(
         self, tool_name: str, args: Dict[str, Any], context: Dict[str, Any]
@@ -103,24 +111,44 @@ class ProbabilisticJudge:
 
     def _mock_assessment(self, tool_name: str, args: Dict[str, Any], context: Dict[str, Any]) -> RiskAssessment:
         payload = {"args": args, "context": context, "tool": tool_name}
-        for rule in self.mock_rules:
+        
+        if self.debug:
+            logger.debug(f"Mock assessment for tool: {tool_name}")
+        
+        for idx, rule in enumerate(self.mock_rules):
             tools = rule.get("tools") or []
             if tools and tool_name not in tools:
                 continue
             field = rule.get("field")
             operator = rule.get("operator", "eq")
             expected = rule.get("value")
-            if field and _compare(_deep_get(payload, field), operator, expected):
-                return RiskAssessment(
+            
+            actual_value = _deep_get(payload, field)
+            matches = _compare(actual_value, operator, expected)
+            
+            if self.debug:
+                logger.debug(f"  Mock rule {idx}: field='{field}' operator='{operator}' expected={expected}")
+                logger.debug(f"    Actual value: {actual_value}, Matches: {matches}")
+            
+            if field and matches:
+                result = RiskAssessment(
                     risk_score=rule.get("risk_score", 0.5),
                     confidence=rule.get("confidence", 1.0),
                     reason=rule.get("reason", "Mock rule triggered."),
                     violation_tags=rule.get("tags", []),
                 )
+                if self.debug:
+                    logger.debug(f"  ✓ Mock rule triggered: {result.reason}")
+                return result
 
-        return RiskAssessment(
+        result = RiskAssessment(
             risk_score=self.default_mock.get("risk_score", 0.1),
             confidence=self.default_mock.get("confidence", 1.0),
             reason=self.default_mock.get("reason", "Mock: Default safe."),
             violation_tags=self.default_mock.get("tags", []),
         )
+        
+        if self.debug:
+            logger.debug(f"  No mock rules matched, using default: {result.reason}")
+        
+        return result

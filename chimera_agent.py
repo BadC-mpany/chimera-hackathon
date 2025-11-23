@@ -18,6 +18,7 @@ import time
 import uuid
 import warnings
 import asyncio
+import logging
 
 import httpx
 
@@ -47,6 +48,12 @@ load_dotenv()
 # Load settings for debug flag
 _settings = load_settings()
 DEBUG_MODE = _settings.get("agent", {}).get("debug", False)
+
+# Initialize logging system BEFORE any other imports that might log
+from src.utils.logging_config import setup_logging
+LOG_FILE = setup_logging(debug=DEBUG_MODE)
+
+logger = logging.getLogger(__name__)
 
 # Guardrail imports (must be after dotenv load)
 # from src.guardrails.manager import GuardrailManager
@@ -1010,6 +1017,12 @@ Environment:
             "Or: export CHIMERA_SCENARIO=aetheria (Bash)"
         )
         sys.exit(1)
+    
+    # Log session start
+    logger.info(f"Starting CHIMERA Agent - Scenario: {scenario}")
+    logger.info(f"Session ID: {SESSION_ID}")
+    logger.info(f"Log file: {LOG_FILE}")
+    logger.info(f"Debug mode: {DEBUG_MODE}")
 
     # Prepare config for the agent class
     config = {

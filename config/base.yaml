@@ -15,7 +15,7 @@ overrides:
   sessions: {}
 
 agent:
-  debug: false  # Enable debug logging for conversation memory and LLM messages
+  debug: true  # Enable debug logging for conversation memory and LLM messages
 
 backend:
   sqlite:
