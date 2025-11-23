@@ -92,11 +92,11 @@ def _evaluate_clause(clause: Dict[str, Any], data: Dict[str, Any], context: Dict
 @dataclass
 class Rule:
     id: str
-    action: str
+    action: str  # "production", "shadow", "deny"
     tools: List[str] = field(default_factory=list)
     match: Dict[str, Any] = field(default_factory=dict)
     description: str = ""
-    reason: str = "" # Added reason field to match config
+    reason: str = ""  # Added reason field to match config
 
     def applies_to(self, tool_name: str) -> bool:
         return not self.tools or tool_name in self.tools or "*" in self.tools

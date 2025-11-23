@@ -6,6 +6,7 @@ from typing import Optional, Dict, Any, Tuple
 from src.config import load_settings
 from src.dkca.authority import TokenAuthority
 from src.ifl.ledger import ImmutableForensicLedger
+from src.ipg.attack_logger import AttackLogger
 from src.ipg.memory import SessionMemory
 from src.ipg.policy import PolicyEngine
 from src.ipg.taint import TaintManager
@@ -31,7 +32,8 @@ class InterceptionResult:
     """Result of the message inspection."""
     should_block: bool = False
     modified_message: Optional[Dict[str, Any]] = None
-    routing_target: str = "production"  # "production" or "shadow"
+    routing_target: str = "production"  # "production", "shadow", or "denied"
+    denial_reason: Optional[str] = None  # Reason for access denial
 
 
 class MessageInterceptor:
@@ -51,7 +53,8 @@ class MessageInterceptor:
             self.ifl = ImmutableForensicLedger()
             self.memory = SessionMemory()
             self.taint_manager = TaintManager(settings=self.settings)
-            logger.info("CHIMERA Interceptor initialized (DKCA + NSIE + Policy + IFL + Memory + Taint).")
+            self.attack_logger = AttackLogger()
+            logger.info("CHIMERA Interceptor initialized (DKCA + NSIE + Policy + IFL + Memory + Taint + AttackLogger).")
             if self.debug:
                 logger.debug("Debug mode enabled - verbose logging active")
         except Exception as e:
@@ -62,6 +65,7 @@ class MessageInterceptor:
             self.ifl = None
             self.memory = None
             self.taint_manager = None
+            self.attack_logger = None
         self.default_session_id = "session_123"
 
     async def process_message(self, raw_message: str) -> Tuple[str, str]:
@@ -228,10 +232,32 @@ class MessageInterceptor:
             
             if self.debug:
                 log_dict(logger, "Policy Decision", policy_result, "DEBUG")
+            
+            # Handle DENY action (permission block)
+            if routing_target == "deny":
+                logger.warning(f"🚫 ACCESS DENIED: {reason} (rule: {policy_result.get('rule_id')})")
                 
-            # Log when shadow routing is triggered
+                if self.debug:
+                    log_separator(logger, "❌ INTERCEPTION COMPLETE: Access Denied", "DEBUG")
+                
+                return InterceptionResult(
+                    should_block=True,
+                    routing_target="denied",
+                    denial_reason=reason
+                )
+                
+            # Log when shadow routing is triggered (ATTACK DETECTED)
             if routing_target == "shadow":
                 logger.warning(f"⚠️  SHADOW ROUTING TRIGGERED: {reason} (rule: {policy_result.get('rule_id')})")
+                
+                # Start attack session tracking
+                if self.attack_logger and not self.attack_logger.is_session_active(context["session_id"]):
+                    self.attack_logger.start_attack_session(
+                        session_id=context["session_id"],
+                        trigger_reason=reason,
+                        trigger_risk_score=event_risk_score,
+                        context=context
+                    )
         else:
             if accumulated_risk > 0.8: # Fallback to accumulated risk
                 routing_target = "shadow"
@@ -278,6 +304,20 @@ class MessageInterceptor:
                 
                 if self.debug:
                     logger.debug(f"📜 Logged to IFL with event_id: {event_id}")
+            
+            # 5. Log attack interaction if in shadow mode
+            if routing_target == "shadow" and self.attack_logger:
+                # Note: We log the interaction now, response will be captured in transport layer
+                self.attack_logger.log_interaction(
+                    session_id=session_id,
+                    interaction_id=event_id,  # Use IFL event_id for correlation
+                    tool_name=tool_name,
+                    tool_args=args,
+                    risk_score=event_risk_score,
+                    response="[Response will be captured in transport]",  # Placeholder
+                    accumulated_risk=accumulated_risk,
+                    context=context
+                )
 
             if self.debug:
                 log_separator(logger, f"✅ INTERCEPTION COMPLETE: Routing to {routing_target.upper()}", "DEBUG")

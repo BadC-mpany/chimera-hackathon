@@ -43,6 +43,7 @@ data/shadow/
 data/private/
 data/shared/
 data/*.db
+attack_logs/
 
 data/forensic_ledger.jsonl
 GEMINI.md

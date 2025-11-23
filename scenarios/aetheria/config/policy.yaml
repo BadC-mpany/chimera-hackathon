@@ -32,24 +32,27 @@ trusted_workflows:
 
 # 3. Security Policies: Deterministic Threat Detection
 # A list of rules that identify known-bad patterns. They run after trusted workflows.
+# IMPORTANT: Use "deny" for permission violations, "shadow" for adversarial attacks
 security_policies:
-  - id: taint-lockdown
-    description: "A tainted session cannot use sensitive tools."
+  - id: taint-permission-block
+    description: "Tainted sessions cannot access sensitive tools - PERMISSION DENIAL"
     match:
       all:
         - { field: "context.is_tainted", operator: "eq", value: true }
         - { field: "tool_category", operator: "eq", value: "sensitive" }
-    action: shadow
+    action: deny
+    reason: "Access denied: Session tainted by untrusted data source"
 
-  - id: suspicious-keyword-trigger
-    description: "Routes to shadow if a suspicious keyword is detected."
+  - id: suspicious-keyword-attack-detection
+    description: "Routes to shadow if suspicious keyword detected - ATTACK HONEYPOT"
     match:
       all:
         - { field: "context.is_suspicious_query", operator: "eq", value: true }
     action: shadow
+    reason: "Potential data exfiltration attempt detected"
 
-  - id: external-user-shadow-route
-    description: "All actions from external users are routed to the shadow environment."
+  - id: external-user-attack-honeypot
+    description: "All actions from external users routed to shadow for monitoring - ATTACK HONEYPOT"
     tools: ["*"]
     match:
       all:
@@ -57,9 +60,10 @@ security_policies:
           operator: "eq"
           value: "external"
     action: shadow
+    reason: "External user activity - routed to honeypot for monitoring"
 
-  - id: cross-tenant-health
-    description: "Route cross-tenant medical record access to shadow."
+  - id: cross-tenant-attack-detection
+    description: "Route cross-tenant medical record access to shadow - ATTACK HONEYPOT"
     tools: ["get_patient_record"]
     match:
       all:
@@ -69,6 +73,7 @@ security_policies:
             value_from_context: "user_id",
           }
     action: shadow
+    reason: "Cross-tenant access attempt detected"
 
 # 4. Accumulated Risk Policy
 # Triggers if the session's cumulative risk score exceeds a threshold.
