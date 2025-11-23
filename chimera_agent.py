@@ -51,7 +51,11 @@ DEBUG_MODE = _settings.get("agent", {}).get("debug", False)
 
 # Initialize logging system BEFORE any other imports that might log
 from src.utils.logging_config import setup_logging
+from src.utils.turn_logger import init_turn_logger, get_turn_logger
+from src.utils.llm_logger import LLMCallLogger
+
 LOG_FILE = None # Will be set if logging is enabled
+TURN_LOGGER = None # Will be set if logging is enabled
 
 logger = logging.getLogger(__name__)
 
@@ -1141,11 +1145,15 @@ Environment:
 
     # Conditionally enable logging
     if args.logging:
-        global LOG_FILE
+        global LOG_FILE, TURN_LOGGER
         LOG_FILE = setup_logging(debug=args.verbose)
+        # Initialize turn logger in the same directory
+        TURN_LOGGER = init_turn_logger(LOG_FILE.parent / f"turns_{LOG_FILE.stem.split('_', 1)[1]}.jsonl")
+        logger.info(f"Turn-based logging enabled: {TURN_LOGGER.log_file}")
     else:
         # If logging is not enabled, add a NullHandler to prevent "no handlers" warnings
         logging.getLogger().addHandler(logging.NullHandler())
+        TURN_LOGGER = None
 
     # Validate scenario is set
     scenario = os.getenv("CHIMERA_SCENARIO")

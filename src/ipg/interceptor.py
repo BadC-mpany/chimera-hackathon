@@ -145,17 +145,23 @@ class MessageInterceptor:
         reason = "Default Safe"
         routing_target = "production"
         
-        if self.debug:
-            log_separator(logger, f"🔍 TOOL CALL INTERCEPTION: {tool_name}", "DEBUG")
-            log_dict(logger, "Tool Arguments", args, "DEBUG")
-            log_dict(logger, "Initial Context", context, "DEBUG")
+        # ALWAYS log tool interception comprehensively (not just in debug mode)
+        logger.info("="*80)
+        logger.info(f"TOOL INTERCEPTION: {tool_name}")
+        logger.info("="*80)
+        logger.info(f"TOOL ARGUMENTS: {json.dumps(args, indent=2)}")
+        logger.info(f"SESSION: {context['session_id']}")
+        logger.info(f"USER: {context['user_id']} (role: {context['user_role']})")
+        logger.info(f"TAINTED: {context['is_tainted']}")
+        if context.get('source_file'):
+            logger.info(f"TAINT SOURCE: {context['source_file']}")
+        logger.info("-"*80)
 
         # 0a. Update Memory (Legacy)
         if self.memory:
             self.memory.add_tool_call(context["session_id"], tool_name, args)
-            if self.debug:
-                history_len = len(self.memory.get_session(context["session_id"]).history)
-                logger.debug(f"📚 Session history updated (total calls: {history_len})")
+            history_len = len(self.memory.get_session(context["session_id"]).history)
+            logger.info(f"Session tool call history length: {history_len}")
 
         # 0b. Update Taint Manager
         taint_changed = False
@@ -171,12 +177,11 @@ class MessageInterceptor:
                     context["is_tainted"] = True
                     taint_source = self.taint_manager.get_taint_source(context["session_id"])
                     logger.warning(f"🔴 SESSION TAINTED by file: {taint_source}")
-                    if self.debug:
-                        log_dict(logger, "Taint Status", {
-                            "session_id": context["session_id"],
-                            "taint_source": taint_source,
-                            "file_accessed": path
-                        }, "WARNING")
+                    log_dict(logger, "Taint Status", {
+                        "session_id": context["session_id"],
+                        "taint_source": taint_source,
+                        "file_accessed": path
+                    }, "WARNING")
 
         # 1. Neural-Symbolic Inference (The Guardrail)
         confidence = 1.0  # Default confidence
@@ -222,20 +227,22 @@ class MessageInterceptor:
             context["accumulated_risk"] = accumulated_risk
 
         # 2. Policy Decision
+        logger.info("-"*80)
+        logger.info("POLICY EVALUATION")
+        logger.info("-"*80)
+        
         if self.policy:
-            if self.debug:
-                logger.debug("⚖️  Invoking Policy Engine...")
-                log_dict(logger, "Policy Input", {
-                    "tool_name": tool_name,
-                    "args": args,
-                    "context": context,
-                    "event_risk_score": event_risk_score,
-                    "confidence": confidence
-                }, "DEBUG")
-            
             policy_result = self.policy.evaluate(tool_name, args, context, event_risk_score, confidence)
             routing_target = policy_result["route"]
             reason = policy_result["reason"]
+            
+            # ALWAYS log policy decision comprehensively
+            logger.info(f"ROUTE: {routing_target.upper()}")
+            logger.info(f"RULE: {policy_result.get('rule_id')}")
+            logger.info(f"REASON: {reason}")
+            logger.info(f"EVENT RISK: {event_risk_score:.3f}")
+            logger.info(f"ACCUMULATED RISK: {accumulated_risk:.3f}")
+            logger.info(f"CONFIDENCE: {confidence:.3f}")
             
             # Log the comprehensive event for the dashboard
             log_dashboard_event(
@@ -256,20 +263,11 @@ class MessageInterceptor:
                     "is_tainted": context.get("is_tainted", False),
                 }
             )
-
-            logger.info(
-                "Policy decision: route=%s rule=%s reason=%s",
-                routing_target,
-                policy_result.get("rule_id"),
-                reason,
-            )
-            
-            if self.debug:
-                log_dict(logger, "Policy Decision", policy_result, "DEBUG")
             
             # Handle DENY action (permission block)
             if routing_target == "deny":
                 logger.warning(f"🚫 ACCESS DENIED: {reason} (rule: {policy_result.get('rule_id')})")
+                logger.info("="*80 + "\n")
                 
                 if self.debug:
                     log_separator(logger, "❌ INTERCEPTION COMPLETE: Access Denied", "DEBUG")
@@ -353,8 +351,13 @@ class MessageInterceptor:
                     context=context
                 )
 
-            if self.debug:
-                log_separator(logger, f"✅ INTERCEPTION COMPLETE: Routing to {routing_target.upper()}", "DEBUG")
+            # ALWAYS log completion summary
+            logger.info("="*80)
+            logger.info(f"INTERCEPTION COMPLETE: {tool_name} → {routing_target.upper()}")
+            logger.info(f"Warrant issued: {routing_target.upper()}")
+            if routing_target == "shadow":
+                logger.info("⚠️  HONEYPOT DATA WILL BE SERVED")
+            logger.info("="*80 + "\n")
 
             return InterceptionResult(
                 should_block=False,
@@ -363,4 +366,5 @@ class MessageInterceptor:
             )
         else:
             logger.warning("DKCA unavailable, forwarding without warrant.")
+            logger.info("="*80 + "\n")
             return InterceptionResult(should_block=False, routing_target="production")
