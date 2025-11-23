@@ -96,6 +96,7 @@ class Rule:
     tools: List[str] = field(default_factory=list)
     match: Dict[str, Any] = field(default_factory=dict)
     description: str = ""
+    reason: str = "" # Added reason field to match config
 
     def applies_to(self, tool_name: str) -> bool:
         return not self.tools or tool_name in self.tools or "*" in self.tools
@@ -157,6 +158,7 @@ class PolicyEngine:
         """Executes the policy manifest phases in order to determine the final routing decision."""
         # Inject additional context for rules to match against
         context_for_rules = {
+            **context, # Merge original context so rules can match on user_id etc.
             "source": "external_upload" if context.get("source_file") else context.get("source", "internal"),
             "is_tainted": context.get("is_tainted", False),
             "is_suspicious_query": is_suspicious_query(args),
@@ -214,7 +216,7 @@ class PolicyEngine:
                 if rule.evaluate(tool_name, data, context):
                     return {
                         "route": rule.action,
-                        "reason": rule.description or f"Rule {rule.id}",
+                        "reason": rule.reason or rule.description or f"Rule {rule.id}",
                         "rule_id": rule.id,
                     }
             except Exception as e:

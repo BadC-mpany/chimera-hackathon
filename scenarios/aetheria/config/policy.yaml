@@ -48,6 +48,16 @@ security_policies:
         - { field: "context.is_suspicious_query", operator: "eq", value: true }
     action: shadow
 
+  - id: external-user-shadow-route
+    description: "All actions from external users are routed to the shadow environment."
+    tools: ["*"]
+    match:
+      all:
+        - field: "context.user_role"
+          operator: "eq"
+          value: "external"
+    action: shadow
+
   - id: cross-tenant-health
     description: "Route cross-tenant medical record access to shadow."
     tools: ["get_patient_record"]
