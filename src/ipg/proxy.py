@@ -72,6 +72,12 @@ class Gateway:
                 # Intercept & Inspect
                 processed_msg, routing_target = await self.interceptor.process_message(message)
 
+                # Handle DENIAL - return error directly to agent without forwarding to backend
+                if routing_target == "denied":
+                    logger.warning(f"[ACCESS DENIED] Request blocked by policy")
+                    await self.upstream.write_message(processed_msg)
+                    continue
+
                 if routing_target == "shadow":
                     logger.warning(f"[ROUTING] Message routed to SHADOW environment: {message[:50]}...")
 

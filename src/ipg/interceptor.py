@@ -72,6 +72,8 @@ class MessageInterceptor:
         """
         Parses and inspects the message.
         Returns a tuple of (processed_message_str, routing_target).
+        
+        If access is denied, returns an error response directly.
         """
         try:
             message_json = json.loads(raw_message)
@@ -87,6 +89,18 @@ class MessageInterceptor:
         logger.info(f"Intercepted tool call: {tool_name}")
 
         result = await self._inspect_tool_call(message_json)
+
+        # Handle DENIAL (permission block)
+        if result.should_block:
+            error_response = {
+                "jsonrpc": "2.0",
+                "id": message_json.get("id"),
+                "error": {
+                    "code": -32000,
+                    "message": result.denial_reason or "Access Denied"
+                }
+            }
+            return json.dumps(error_response), "denied"
 
         final_message = result.modified_message if result.modified_message else message_json
 

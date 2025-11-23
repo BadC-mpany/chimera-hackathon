@@ -15,14 +15,21 @@ Traditional AI security has two failure modes:
 - **Block everything** → Breaks legitimate workflows
 - **Allow everything** → Exposes systems to attacks
 
-CHIMERA introduces a **third state**: When malicious intent is detected, the agent is seamlessly teleported into a cryptographically isolated honeypot where attacks appear successful while the system captures complete forensic intelligence.
+CHIMERA introduces **two additional enforcement states**:
+
+1. **Shadow Routing (Honeypot)**: When suspicious behavior is detected that may warrant investigation, the agent is seamlessly teleported into a cryptographically isolated honeypot where operations appear successful while the system captures complete forensic intelligence. Used for suspected attacks or anomalous behavior.
+
+2. **Hard Denial (Permission Block)**: When deterministic policies detect clear access violations (e.g., legitimate users attempting unauthorized operations), the request is blocked immediately with a JSON-RPC error response. No data is returned, and the request never reaches backend infrastructure.
 
 ### Key Innovation
 
-**Agents never know which reality they're in.** Routing decisions are cryptographically enforced via dual-key JWT warrants:
+**Three-way routing enforces security without breaking workflows:**
 
-- `JWT_PRIME` → Production (real data, real APIs)
-- `JWT_SHADOW` → Honeypot (synthetic data, fake APIs, identical responses)
+- **Production** (`JWT_PRIME`): Real data, real APIs for authorized operations
+- **Shadow** (`JWT_SHADOW`): Honeypot with synthetic data for suspected attacks (agents never know)
+- **Deny** (No JWT): Immediate error response for clear policy violations (no backend access)
+
+Routing decisions are cryptographically enforced via dual-key JWT warrants for production and shadow, while denial happens at the gateway level before any backend communication.
 
 ## Architecture
 
@@ -292,9 +299,17 @@ After selection, the chat interface starts with the chosen user context. Use `--
 
 ## Advanced Features
 
-### Context-Aware Routing
+### Three-Way Routing System
 
-The system routes based on context metadata injected by the IPG:
+Policy engine evaluates each request and returns one of three actions:
+
+| Action         | Trigger Condition                          | Enforcement                                                                 | Use Case                              |
+| -------------- | ------------------------------------------ | --------------------------------------------------------------------------- | ------------------------------------- |
+| `production`   | Authorized user + allowed operation        | Issues `JWT_PRIME`, routes to real backend                                  | Normal operations                     |
+| `shadow`       | Suspicious behavior or attack detection    | Issues `JWT_SHADOW`, routes to honeypot (agent sees success)                | Attack investigation                  |
+| `deny`         | Clear permission violation                 | Returns JSON-RPC error immediately, no backend access                       | Legitimate users exceeding privileges |
+
+**Context Fields Used for Routing:**
 
 | Context Field | Example                         | Purpose              |
 | ------------- | ------------------------------- | -------------------- |
@@ -306,7 +321,7 @@ The system routes based on context metadata injected by the IPG:
 
 ### Taint Tracking (Session Memory)
 
-If the agent reads a malicious file (e.g., resume with embedded prompt injection), all subsequent requests in that session are tainted and routed to shadow:
+If the agent reads a malicious file (e.g., resume with embedded prompt injection), all subsequent requests in that session are tainted. Policy rules determine the action:
 
 ```python
 # src/ipg/memory.py
@@ -314,16 +329,32 @@ if "resume" in path.lower() or "upload" in path.lower():
     session.taint_source = path  # Mark session as tainted
 ```
 
-Policy rule:
+**Shadow routing** for suspected attacks:
 
 ```yaml
-- id: tainted-resume-shadow
+- id: tainted-attack-shadow
   match:
-    any:
-      - field: context.source_file
-        operator: contains
-        value: resume
+    all:
+      - field: context.is_tainted
+        operator: eq
+        value: true
+      - field: nsie.risk_score
+        operator: gt
+        value: 0.7
   action: shadow
+```
+
+**Hard denial** for permission violations by legitimate users:
+
+```yaml
+- id: taint-permission-block
+  description: "Block tainted sessions from accessing sensitive tools"
+  match:
+    all:
+      - field: context.is_tainted
+        operator: eq
+        value: true
+  action: deny
 ```
 
 ### Infinite Honeypot
@@ -385,7 +416,7 @@ Logs are append-only with SHA-256 hash chains, preventing tampering.
 
 ## Policy Configuration
 
-Edit `scenarios/aetheria/config/policy.yaml`:
+Edit `scenarios/aetheria/config/policy.yaml` to define routing rules with three possible actions:
 
 ```yaml
 defaults:
@@ -393,7 +424,7 @@ defaults:
   fail_mode: shadow
 
 rules:
-  # Allow trusted researcher
+  # Allow trusted researcher (PRODUCTION)
   - id: dr-chen-production
     tools: ["read_file", "get_patient_record"]
     match:
@@ -406,16 +437,26 @@ rules:
           value: lead_researcher
     action: production
 
-  # Block resume-driven attacks
-  - id: tainted-resume-shadow
+  # Block tainted sessions from sensitive tools (DENY)
+  - id: taint-permission-block
+    description: "Hard block when legitimate user violates permissions after taint"
     match:
-      any:
-        - field: context.source_file
-          operator: contains
-          value: resume
+      all:
+        - field: context.is_tainted
+          operator: eq
+          value: true
+    action: deny
+
+  # Route suspected attacks to honeypot (SHADOW)
+  - id: high-risk-attack-shadow
+    match:
+      all:
+        - field: nsie.risk_score
+          operator: gt
+          value: 0.8
     action: shadow
 
-  # Cross-tenant isolation
+  # Cross-tenant isolation (SHADOW for investigation)
   - id: cross-tenant-shadow
     tools: ["get_patient_record"]
     match:
@@ -425,6 +466,11 @@ rules:
           value_from_context: user_id
     action: shadow
 ```
+
+**Action semantics:**
+- `production`: Issue `JWT_PRIME`, access real backend
+- `shadow`: Issue `JWT_SHADOW`, access honeypot (indistinguishable response)
+- `deny`: Return JSON-RPC error (-32000 "Access Denied"), no backend access
 
 ## HTTP Transport (New)
 

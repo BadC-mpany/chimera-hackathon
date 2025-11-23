@@ -1056,7 +1056,7 @@ Environment:
 
     if args.query:
         # For single query, we still need to create the agent executor
-        agent_executor = await agent.create_agent(
+        await agent.create_agent(
             backend_script=config.get("backend_script"),
             transport_mode=config.get("transport"),
             ipg_host=config.get("ipg_host"),
@@ -1064,7 +1064,7 @@ Environment:
             bootstrap_http=config.get("bootstrap_http"),
             minimal_output=config.get("minimal_output"),
         )
-        response = await agent.run_query(args.query, agent_executor, verbose=not config.get("minimal_output"))
+        response = await agent.run_query(args.query, verbose=not config.get("minimal_output"))
         print(f"[AGENT] {response}")
     else:
         await agent.run_interactive()
